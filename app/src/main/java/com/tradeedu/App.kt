@@ -96,6 +96,7 @@ fun LessonView(l: LessonData, key: String, back: () -> Unit) {
     Column(Modifier.verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         TextButton(back) { Text("← بازگشت") }
         Text(l.title, style = MaterialTheme.typography.titleLarge)
+        if (l.fig.isNotEmpty()) Figure(l.fig)
         Text(l.text)
         l.quiz.forEachIndexed { qi, q ->
             Text("${qi + 1}. ${q.q}", style = MaterialTheme.typography.titleSmall)

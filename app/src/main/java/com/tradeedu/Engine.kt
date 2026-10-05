@@ -10,6 +10,7 @@ data class Feedback(val ok: Boolean, val msg: String)
 sealed class Drawn {
     data class HLine(val price: Double) : Drawn()
     data class TLine(val i1: Double, val p1: Double, val i2: Double, val p2: Double) : Drawn()
+    data class Zone(val i1: Double, val p1: Double, val i2: Double, val p2: Double) : Drawn()
 }
 
 fun sampleCandles(n: Int = 120, seed: Int = 7): List<Candle> {
@@ -57,6 +58,7 @@ class Analysis(private val cs: List<Candle>) {
                     else Feedback(false, "این سطح به هیچ ناحیه‌ی معتبری (حداقل ۲ سقف یا کف نزدیک هم) وصل نیست")
                 }
                 is Drawn.TLine -> gradeTrend(d)
+                is Drawn.Zone -> gradeZone(d)
             }
         }.toMutableList()
         levels.firstOrNull()?.let { top ->
@@ -66,6 +68,14 @@ class Analysis(private val cs: List<Candle>) {
             }
         }
         return r
+    }
+
+    private fun gradeZone(d: Drawn.Zone): Feedback {
+        val a = min(d.p1, d.p2); val b = max(d.p1, d.p2)
+        val inside = levels.filter { it.price in a..b }
+        return if (inside.isEmpty()) Feedback(false, "این ناحیه هیچ سطح معتبری (سقف/کف تکراری) را پوشش نمی‌دهد")
+        else if (b - a > tol * 6) Feedback(false, "ناحیه خیلی پهن است؛ ناحیه‌ی خوب باریک و دقیق است")
+        else Feedback(true, "ناحیه درست است؛ ${inside.first().touches} برخورد را پوشش می‌دهد")
     }
 
     private fun gradeTrend(d: Drawn.TLine): Feedback {
