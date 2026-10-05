@@ -19,6 +19,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -27,9 +28,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
+            MaterialTheme(colorScheme = TgScheme) {
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-                    Surface(Modifier.fillMaxSize()) { Screen() }
+                    Surface(Modifier.fillMaxSize()) { App() }
                 }
             }
         }
@@ -38,11 +39,11 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun Tab(t: String, on: Boolean, m: Modifier, f: () -> Unit) {
-    if (on) Button(f, m) { Text(t) } else OutlinedButton(f, m) { Text(t) }
+    val p = PaddingValues(4.dp); if (on) Button(f, m, contentPadding = p) { Text(t, maxLines = 1, fontSize = 13.sp) } else OutlinedButton(f, m, contentPadding = p) { Text(t, maxLines = 1, fontSize = 13.sp) }
 }
 
 @Composable
-fun Screen() {
+fun Practice() {
     val cs = remember { sampleCandles() }
     val an = remember { Analysis(cs) }
     val n = cs.size
@@ -102,7 +103,7 @@ fun Screen() {
             Tab("خط افقی", mode == 1, Modifier.weight(1f)) { mode = 1; pending = null }
             Tab("خط روند", mode == 2, Modifier.weight(1f)) { mode = 2; pending = null }
             Tab("پاک", false, Modifier.weight(1f)) { lines.clear(); res = emptyList(); graded = false; pending = null }
-            Button({ res = an.grade(lines.toList()); graded = true }, Modifier.weight(1f), enabled = lines.isNotEmpty()) { Text("تصحیح") }
+            Button({ res = an.grade(lines.toList()); graded = true }, Modifier.weight(1f), enabled = lines.isNotEmpty(), contentPadding = PaddingValues(4.dp)) { Text("تصحیح", maxLines = 1, fontSize = 13.sp) }
         }
         if (graded) {
             Text("نمره: ${res.count { it.ok }} از ${lines.size}", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.titleSmall)
