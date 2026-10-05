@@ -2,7 +2,7 @@ package com.tradeedu
 
 import kotlin.math.*
 
-data class Candle(val o: Double, val h: Double, val l: Double, val c: Double)
+data class Candle(val o: Double, val h: Double, val l: Double, val c: Double, val v: Double = 0.0, val t: Long = 0L)
 data class Pivot(val i: Int, val price: Double, val high: Boolean)
 data class Level(val price: Double, val touches: Int)
 data class Feedback(val ok: Boolean, val msg: String)
@@ -18,7 +18,7 @@ fun sampleCandles(n: Int = 120, seed: Int = 7): List<Candle> {
     return List(n) { i ->
         val o = p; val c = o + sin(i / 12.0) * 0.9 + r.nextGaussian() * 0.9
         val h = max(o, c) + r.nextDouble() * 0.7; val l = min(o, c) - r.nextDouble() * 0.7
-        p = c; Candle(o, h, l, c)
+        p = c; Candle(o, h, l, c, 50 + r.nextDouble() * 100, 1_700_000_000_000L + i * 3_600_000L)
     }
 }
 
