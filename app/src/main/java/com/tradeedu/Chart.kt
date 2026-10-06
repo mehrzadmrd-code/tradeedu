@@ -40,6 +40,7 @@ import kotlin.math.min
 import kotlin.math.sqrt
 import androidx.compose.ui.graphics.Path
 import kotlinx.coroutines.delay
+import androidx.compose.ui.platform.LocalContext
 
 val SYMBOLS = listOf("BTCUSDT" to "بیت‌کوین", "ETHUSDT" to "اتریوم", "PAXGUSDT" to "طلا (XAU)", "EURUSDT" to "یورو", "GBPUSDT" to "پوند", "SOLUSDT" to "سولانا")
 val TFS = listOf("1m", "5m", "15m", "1h", "4h", "1d", "1w")
@@ -51,9 +52,9 @@ private fun get(u: String): String {
     return c.inputStream.bufferedReader().readText()
 }
 
-suspend fun fetchCandles(sym: String, tf: String): List<Candle>? = withContext(Dispatchers.IO) {
+suspend fun fetchCandles(sym: String, tf: String, limit: Int = 300): List<Candle>? = withContext(Dispatchers.IO) {
     try {
-        val a = JSONArray(get("https://data-api.binance.vision/api/v3/klines?symbol=$sym&interval=$tf&limit=300"))
+        val a = JSONArray(get("https://data-api.binance.vision/api/v3/klines?symbol=$sym&interval=$tf&limit=$limit"))
         List(a.length()) { val k = a.getJSONArray(it); Candle(k.getString(1).toDouble(), k.getString(2).toDouble(), k.getString(3).toDouble(), k.getString(4).toDouble(), k.getString(5).toDouble(), k.getLong(0)) }
     } catch (e: Exception) { null }
 }
@@ -185,23 +186,42 @@ fun SubPane(kind: String, cs: List<Candle>, I: Inds, offF: () -> Float, visF: ()
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun Practice() {
-    var sym by remember { mutableStateOf("PAXGUSDT") }
-    var tf by remember { mutableStateOf("15m") }
-    var cs by remember { mutableStateOf(sampleCandles()) }
-    var tick by remember { mutableStateOf<Tick?>(null) }
+    var sym by S::sym
+    var tf by S::tf
+    var cs by S::cs
+    var tick by S::tick
     var status by remember { mutableStateOf("") }
     var mode by remember { mutableIntStateOf(0) }
-    val ovs = remember { mutableStateListOf<String>() }
-    val subs = remember { mutableStateListOf("VOL") }
-    var ctype by remember { mutableIntStateOf(0) }
-    var grid by remember { mutableStateOf(true) }
+    val ovs = S.ovs
+    val subs = S.subs
+    var ctype by S::ctype
+    var grid by S::grid
     var now by remember { mutableLongStateOf(0L) }
     var menu by remember { mutableStateOf("") }
     var dlg by remember { mutableStateOf("") }
     var hub by remember { mutableStateOf(false) }
-    var vis by remember { mutableFloatStateOf(80f) }
-    var off by remember { mutableFloatStateOf(40f) }
-    val lines = remember { mutableStateListOf<Drawn>() }
+    var vis by S::vis
+    var off by S::off
+    val lines = S.lines
+    var vz by S::vz
+    var voff by S::voff
+    var sel by remember { mutableIntStateOf(-1) }
+    var selH by remember { mutableIntStateOf(0) }
+    val ctx = LocalContext.current
+    val prefs = remember { ctx.getSharedPreferences("chart", 0) }
+    remember {
+        if (!S.inited) {
+            S.inited = true
+            prefs.getString("cfg", null)?.split("|")?.let { p ->
+                if (p.size == 6) {
+                    S.sym = p[0]; S.tf = p[1]; S.ctype = p[2].toIntOrNull() ?: 0; S.grid = p[3] == "true"
+                    S.ovs.clear(); S.ovs.addAll(p[4].split(",").filter { it.isNotEmpty() })
+                    S.subs.clear(); S.subs.addAll(p[5].split(",").filter { it.isNotEmpty() })
+                }
+            }
+        }
+        0
+    }
     var pending by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     var res by remember { mutableStateOf<List<Feedback>>(emptyList()) }
     var graded by remember { mutableStateOf(false) }
@@ -210,20 +230,38 @@ fun Practice() {
     val df = remember(tf) { SimpleDateFormat(if (tf.endsWith("d") || tf.endsWith("w")) "yyyy-MM-dd" else "HH:mm", Locale.US) }
     val paint = remember { android.graphics.Paint().apply { isAntiAlias = true } }
     LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); delay(1000) } }
+    LaunchedEffect(Unit) { snapshotFlow { "$sym|$tf|$ctype|$grid|${ovs.joinToString(",")}|${subs.joinToString(",")}" }.collect { prefs.edit().putString("cfg", it).apply() } }
+    LaunchedEffect(Unit) { snapshotFlow { lines.toList() }.collect { if (S.live && S.key == "$sym|$tf" && cs[0].t > 0) prefs.edit().putString("d_" + S.key, encode(it, cs[0].t, TFMS[tf] ?: 60_000L)).apply() } }
     LaunchedEffect(sym, tf) {
-        status = "در حال دریافت داده..."
-        val r = fetchCandles(sym, tf)
-        val ok = r != null && r.size > 30
-        val d = if (ok) r!! else sampleCandles()
-        lines.clear(); res = emptyList(); graded = false; pending = null
-        vis = min(80f, d.size.toFloat()); off = d.size - vis; cs = d
-        status = if (ok) "" else "اتصال برقرار نشد؛ داده‌ی نمونه (شاید VPN لازم باشد)"
-        tick = if (ok) fetchTick(sym) else null
+        val key = "$sym|$tf"
+        if (S.key != key || !S.live) {
+            status = "در حال دریافت داده..."
+            val r = fetchCandles(sym, tf)
+            val ok = r != null && r.size > 30
+            val d = if (ok) r!! else sampleCandles()
+            lines.clear(); sel = -1; pending = null; res = emptyList(); graded = false
+            vis = min(80f, d.size.toFloat()); off = d.size - vis; vz = 1f; voff = 0.0
+            cs = d; S.live = ok; S.key = key
+            if (ok) lines.addAll(decode(prefs.getString("d_$key", "") ?: "", d[0].t, TFMS[tf] ?: 60_000L))
+            status = if (ok) "" else "اتصال برقرار نشد؛ داده‌ی نمونه (شاید VPN لازم باشد)"
+            tick = if (ok) fetchTick(sym) else null
+        }
+        while (S.live) {
+            delay(2000)
+            val r = fetchCandles(sym, tf, 3)
+            if (r != null && r.isNotEmpty()) {
+                val l = cs.toMutableList(); val atEnd = off + vis >= l.size - 0.5f
+                for (k in r) { if (k.t == l.last().t) l[l.lastIndex] = k else if (k.t > l.last().t) { l.add(k); if (atEnd) off += 1f } }
+                cs = l
+            }
+            fetchTick(sym)?.let { tick = it }
+        }
     }
     val rng by remember { derivedStateOf {
         val a = off.toInt().coerceIn(0, cs.size - 1); val b = min(cs.size, (off + vis).toInt() + 1)
-        val s = cs.subList(a, max(b, a + 1)); val hh = s.maxOf { it.h }; val ll = s.minOf { it.l }; val p = (hh - ll) * 0.15
-        (ll - p) to (hh + p)
+        val s = cs.subList(a, max(b, a + 1)); val hh = s.maxOf { it.h }; val ll = s.minOf { it.l }
+        val m = (hh + ll) / 2 + voff; val hf = (hh - ll) / 2 * 1.3 * vz + 1e-9
+        (m - hf) to (m + hf)
     } }
     val gc = Color(0xFF089981); val rc = Color(0xFFF23645)
     val last = tick?.last ?: cs.last().c
@@ -242,11 +280,17 @@ fun Practice() {
         Canvas(Modifier.fillMaxWidth().weight(1f).background(Color.Black)
             .pointerInput(cs) {
                 detectTapGestures { p ->
-                    if (mode == 0) return@detectTapGestures
                     val pw = size.width - AXIS.toPx(); val ph = size.height - 22.dp.toPx()
                     if (p.x > pw || p.y > ph) return@detectTapGestures
+                    val lo = rng.first; val hi = rng.second
+                    val px = { i: Double -> ((i - off + 0.5) / vis * pw).toFloat() }; val py = { v: Double -> ((hi - v) / (hi - lo) * ph).toFloat() }
+                    if (mode == 0) {
+                        sel = -1
+                        for (k in lines.indices.reversed()) { val h = hit(lines[k], p.x, p.y, px, py, pw, 22.dp.toPx()); if (h >= 0) { sel = k; selH = h; break } }
+                        return@detectTapGestures
+                    }
                     val idx = off + p.x / pw * vis - 0.5
-                    val price = rng.second - p.y / ph * (rng.second - rng.first)
+                    val price = hi - p.y / ph * (hi - lo)
                     graded = false; res = emptyList()
                     val a = pending
                     if (mode == 1) { lines.add(Drawn.HLine(price)); mode = 0 }
@@ -259,10 +303,20 @@ fun Practice() {
                 }
             }
             .pointerInput(cs) {
-                detectTransformGestures { _, pan, zoom, _ ->
-                    val pw = size.width - AXIS.toPx()
-                    vis = (vis / zoom).coerceIn(15f, cs.size.toFloat())
-                    off = (off - pan.x / pw * vis).coerceIn(0f, max(0f, cs.size - vis))
+                detectTransformGestures { c, pan, zoom, _ ->
+                    val pw = size.width - AXIS.toPx(); val ph = size.height - 22.dp.toPx()
+                    fun setVis(nv: Float) { val re = off + vis; vis = nv.coerceIn(15f, cs.size.toFloat()); off = (re - vis).coerceIn(0f, max(0f, cs.size - vis)) }
+                    val range = rng.second - rng.first
+                    if (c.x > pw) vz = (vz * (1f + pan.y / 400f)).coerceIn(0.2f, 8f)
+                    else if (c.y > ph) setVis(vis * (1f - pan.x / 400f))
+                    else if (zoom != 1f) setVis(vis / zoom)
+                    else if (sel in 0 until lines.size) {
+                        lines[sel] = moveD(lines[sel], selH, (pan.x / pw * vis).toDouble(), -(pan.y / ph * range))
+                        graded = false; res = emptyList()
+                    } else {
+                        off = (off - pan.x / pw * vis).coerceIn(0f, max(0f, cs.size - vis))
+                        voff += pan.y / ph * range
+                    }
                 }
             }
         ) {
@@ -326,6 +380,16 @@ fun Practice() {
                         }
                     }
                 }
+                if (sel in 0 until lines.size) {
+                    val ps: List<Offset> = when (val d = lines[sel]) {
+                        is Drawn.HLine -> listOf(Offset(pw / 2, y(d.price)))
+                        is Drawn.VLine -> listOf(Offset(x(d.i), ph / 2))
+                        is Drawn.TLine -> listOf(Offset(x(d.i1), y(d.p1)), Offset(x(d.i2), y(d.p2)))
+                        is Drawn.Zone -> listOf(Offset(x(d.i1), y(d.p1)), Offset(x(d.i2), y(d.p2)))
+                        is Drawn.Fib -> listOf(Offset(x(d.i1), y(d.p1)), Offset(x(d.i2), y(d.p2)))
+                    }
+                    ps.forEach { drawCircle(Color.White, 8.dp.toPx(), it); drawCircle(Color(0xFF2962FF), 5.dp.toPx(), it) }
+                }
                 pending?.let { drawCircle(Color.White, 10f, Offset(x(it.first), y(it.second))) }
                 val ly0 = y(cs.last().c).coerceIn(0f, ph)
                 drawLine(hc, Offset(0f, ly0), Offset(pw, ly0), 1.5f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(3f, 8f)))
@@ -346,6 +410,12 @@ fun Practice() {
             }
         }
         subs.forEach { SubPane(it, cs, I, { off }, { vis }, gc, rc) }
+        if (sel in 0 until lines.size) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Chip("⧉ کپی", false) { lines.add(moveD(lines[sel], 0, 3.0, -(rng.second - rng.first) * 0.03)); sel = lines.lastIndex; selH = 0; graded = false }
+            Chip("🗑 حذف", false) { lines.removeAt(sel); sel = -1; graded = false }
+            Chip("✓ تمام", false) { sel = -1 }
+            Text("برای جابه‌جایی بکش", fontSize = 11.sp, color = Color.Gray)
+        }
         Row(Modifier.fillMaxWidth().background(Color.Black).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Box {
                 Text(sym, Modifier.clickable { menu = "sym" }.padding(8.dp), fontSize = 18.sp, fontWeight = FontWeight.Bold)
@@ -409,5 +479,75 @@ fun Practice() {
             Text("بیشترین: " + fp(tick?.hi ?: cs.maxOf { it.h })); Text("کمترین: " + fp(tick?.lo ?: cs.minOf { it.l })); Text("حجم ۲۴ ساعت: " + fv(tick?.vol ?: cs.sumOf { it.v }))
         } })
     if (dlg == "set") AlertDialog(onDismissRequest = ok, confirmButton = { TextButton(ok) { Text("تأیید") } }, title = { Text("تنظیمات چارت") },
-        text = { Row(verticalAlignment = Alignment.CenterVertically) { Text("نمایش شبکه", Modifier.weight(1f)); Switch(grid, { grid = it }) } })
+        text = { Column { Row(verticalAlignment = Alignment.CenterVertically) { Text("نمایش شبکه", Modifier.weight(1f)); Switch(grid, { grid = it }) }; TextButton({ vz = 1f; voff = 0.0; dlg = "" }) { Text("بازنشانی مقیاس عمودی") } } })
+}
+
+
+private val S = ChartStore
+object ChartStore {
+    var inited = false; var live = false; var key = ""
+    var sym by mutableStateOf("PAXGUSDT"); var tf by mutableStateOf("15m")
+    var cs by mutableStateOf<List<Candle>>(sampleCandles()); var tick by mutableStateOf<Tick?>(null)
+    val ovs = mutableStateListOf<String>(); val subs = mutableStateListOf("VOL")
+    var ctype by mutableIntStateOf(0); var grid by mutableStateOf(true)
+    var vis by mutableFloatStateOf(80f); var off by mutableFloatStateOf(40f); var vz by mutableFloatStateOf(1f); var voff by mutableDoubleStateOf(0.0)
+    val lines = mutableStateListOf<Drawn>()
+}
+
+@Composable
+fun Chip(t: String, on: Boolean, f: () -> Unit) {
+    Surface(shape = RoundedCornerShape(16.dp), modifier = Modifier.clickable { f() },
+        color = if (on) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface) {
+        Text(t, Modifier.padding(horizontal = 12.dp, vertical = 6.dp), fontSize = 13.sp, maxLines = 1)
+    }
+}
+
+fun moveD(d: Drawn, h: Int, di: Double, dp: Double): Drawn = when (d) {
+    is Drawn.HLine -> d.copy(price = d.price + dp)
+    is Drawn.VLine -> d.copy(i = d.i + di)
+    is Drawn.TLine -> when (h) { 1 -> d.copy(i1 = d.i1 + di, p1 = d.p1 + dp); 2 -> d.copy(i2 = d.i2 + di, p2 = d.p2 + dp); else -> d.copy(i1 = d.i1 + di, p1 = d.p1 + dp, i2 = d.i2 + di, p2 = d.p2 + dp) }
+    is Drawn.Zone -> when (h) { 1 -> d.copy(i1 = d.i1 + di, p1 = d.p1 + dp); 2 -> d.copy(i2 = d.i2 + di, p2 = d.p2 + dp); else -> d.copy(i1 = d.i1 + di, p1 = d.p1 + dp, i2 = d.i2 + di, p2 = d.p2 + dp) }
+    is Drawn.Fib -> when (h) { 1 -> d.copy(i1 = d.i1 + di, p1 = d.p1 + dp); 2 -> d.copy(i2 = d.i2 + di, p2 = d.p2 + dp); else -> d.copy(i1 = d.i1 + di, p1 = d.p1 + dp, i2 = d.i2 + di, p2 = d.p2 + dp) }
+}
+
+val FIBS = listOf(0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0)
+
+fun hit(d: Drawn, tx: Float, ty: Float, px: (Double) -> Float, py: (Double) -> Float, pw: Float, th: Float): Int {
+    fun near(i: Double, p: Double) = abs(px(i) - tx) < th * 1.4f && abs(py(p) - ty) < th * 1.4f
+    fun seg(x1: Float, y1: Float, x2: Float, y2: Float): Boolean {
+        val dx = x2 - x1; val dy = y2 - y1; val l = sqrt(dx * dx + dy * dy).coerceAtLeast(1f)
+        return abs(dy * (tx - x1) - dx * (ty - y1)) / l < th
+    }
+    return when (d) {
+        is Drawn.HLine -> if (abs(py(d.price) - ty) < th) 0 else -1
+        is Drawn.VLine -> if (abs(px(d.i) - tx) < th) 0 else -1
+        is Drawn.TLine -> if (near(d.i1, d.p1)) 1 else if (near(d.i2, d.p2)) 2 else if (seg(px(d.i1), py(d.p1), px(d.i2), py(d.p2))) 0 else -1
+        is Drawn.Zone -> if (near(d.i1, d.p1)) 1 else if (near(d.i2, d.p2)) 2
+            else if (tx in min(px(d.i1), px(d.i2))..max(px(d.i1), px(d.i2)) && ty in min(py(d.p1), py(d.p2))..max(py(d.p1), py(d.p2))) 0 else -1
+        is Drawn.Fib -> if (near(d.i1, d.p1)) 1 else if (near(d.i2, d.p2)) 2
+            else if (tx >= min(px(d.i1), px(d.i2)) && tx <= pw && FIBS.any { abs(py(d.p2 + (d.p1 - d.p2) * it) - ty) < th }) 0 else -1
+    }
+}
+
+fun encode(ls: List<Drawn>, t0: Long, ms: Long): String = ls.joinToString(";") { d ->
+    fun t(i: Double) = t0 + i * ms
+    when (d) {
+        is Drawn.HLine -> "H,${d.price}"
+        is Drawn.VLine -> "V,${t(d.i)}"
+        is Drawn.TLine -> "T,${t(d.i1)},${d.p1},${t(d.i2)},${d.p2}"
+        is Drawn.Zone -> "Z,${t(d.i1)},${d.p1},${t(d.i2)},${d.p2}"
+        is Drawn.Fib -> "F,${t(d.i1)},${d.p1},${t(d.i2)},${d.p2}"
+    }
+}
+
+fun decode(s: String, t0: Long, ms: Long): List<Drawn> = s.split(";").filter { it.isNotBlank() }.mapNotNull { r ->
+    try {
+        val p = r.split(",")
+        fun i(k: Int) = (p[k].toDouble() - t0) / ms
+        when (p[0]) {
+            "H" -> Drawn.HLine(p[1].toDouble()); "V" -> Drawn.VLine(i(1))
+            "T" -> Drawn.TLine(i(1), p[2].toDouble(), i(3), p[4].toDouble()); "Z" -> Drawn.Zone(i(1), p[2].toDouble(), i(3), p[4].toDouble())
+            "F" -> Drawn.Fib(i(1), p[2].toDouble(), i(3), p[4].toDouble()); else -> null
+        }
+    } catch (e: Exception) { null }
 }
