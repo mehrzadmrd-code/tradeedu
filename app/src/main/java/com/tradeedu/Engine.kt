@@ -10,6 +10,8 @@ data class Feedback(val ok: Boolean, val msg: String)
 sealed class Drawn {
     data class HLine(val price: Double) : Drawn()
     data class TLine(val i1: Double, val p1: Double, val i2: Double, val p2: Double) : Drawn()
+    data class Fib(val i1: Double, val p1: Double, val i2: Double, val p2: Double) : Drawn()
+    data class VLine(val i: Double) : Drawn()
     data class Zone(val i1: Double, val p1: Double, val i2: Double, val p2: Double) : Drawn()
 }
 
@@ -59,6 +61,7 @@ class Analysis(private val cs: List<Candle>) {
                 }
                 is Drawn.TLine -> gradeTrend(d)
                 is Drawn.Zone -> gradeZone(d)
+                else -> Feedback(true, "ⓘ این ابزار فقط برای ترسیم است و تصحیح نمی‌شود")
             }
         }.toMutableList()
         levels.firstOrNull()?.let { top ->
