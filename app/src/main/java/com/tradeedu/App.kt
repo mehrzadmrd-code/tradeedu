@@ -13,6 +13,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+import kotlin.math.cos
+import kotlin.math.sin
 
 val TgScheme = darkColorScheme(
     primary = Color(0xFF5EB5F7), onPrimary = Color(0xFF0E1621),
@@ -21,38 +34,108 @@ val TgScheme = darkColorScheme(
     secondaryContainer = Color(0xFF2B5278)
 )
 
+object ThemeStore { var mode by mutableIntStateOf(2) }
+
+val TgLight = lightColorScheme(
+    primary = Color(0xFF2481CC), onPrimary = Color.White,
+    background = Color(0xFFF1F3F5), onBackground = Color(0xFF111111),
+    surface = Color.White, onSurface = Color(0xFF111111),
+    secondaryContainer = Color(0xFFD6E9F8)
+)
+
+@Composable
+fun TvIcon(k: Int, col: Color) {
+    Canvas(Modifier.size(24.dp)) {
+        val s = size.minDimension / 24f
+        fun P(x: Float, y: Float) = Offset(x * s, y * s)
+        val w = 1.8f * s
+        val st = Stroke(w, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        val r = CornerRadius(1f * s)
+        when (k) {
+            0 -> {
+                drawRoundRect(col, P(5f, 3f), Size(14f * s, 18f * s), CornerRadius(2f * s), style = st)
+                drawLine(col, P(9f, 3f), P(9f, 21f), w, StrokeCap.Round)
+                drawLine(col, P(12f, 8f), P(16f, 8f), w, StrokeCap.Round); drawLine(col, P(12f, 12f), P(16f, 12f), w, StrokeCap.Round)
+            }
+            1 -> {
+                drawLine(col, P(8f, 3f), P(8f, 21f), w, StrokeCap.Round); drawRoundRect(col, P(5.5f, 7f), Size(5f * s, 9f * s), r, style = st)
+                drawLine(col, P(16f, 5f), P(16f, 19f), w, StrokeCap.Round); drawRoundRect(col, P(13.5f, 9f), Size(5f * s, 7f * s), r, style = st)
+            }
+            2 -> {
+                drawLine(col, P(4f, 21f), P(20f, 21f), w, StrokeCap.Round)
+                drawRoundRect(col, P(5f, 13f), Size(3.5f * s, 8f * s), r, style = st); drawRoundRect(col, P(10.2f, 9f), Size(3.5f * s, 12f * s), r, style = st)
+                drawRoundRect(col, P(15.5f, 4f), Size(3.5f * s, 17f * s), r, style = st)
+            }
+            else -> {
+                drawCircle(col, 3f * s, P(12f, 12f), style = st); drawCircle(col, 7f * s, P(12f, 12f), style = st)
+                for (i in 0 until 8) {
+                    val an = i * Math.PI / 4; val c = cos(an).toFloat(); val sn = sin(an).toFloat()
+                    drawLine(col, P(12f + 7f * c, 12f + 7f * sn), P(12f + 10f * c, 12f + 10f * sn), w * 1.5f, StrokeCap.Round)
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun App() {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var tab by remember { mutableIntStateOf(0) }
-    val names = listOf("دوره‌ها", "تمرین چارت", "آمار پیشرفت")
-    val icons = listOf("📚", "📈", "📊")
+    val names = listOf("دوره‌ها", "تمرین چارت", "آمار پیشرفت", "تنظیمات")
     ModalNavigationDrawer(drawerState = drawer, drawerContent = {
         ModalDrawerSheet {
-            Text("TradeEdu", Modifier.padding(20.dp), style = MaterialTheme.typography.headlineSmall)
+            Text("آموزش ترید", Modifier.padding(20.dp), style = MaterialTheme.typography.headlineSmall)
             Text("درس‌های کامل‌شده: ${Progress.done.size}", Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
             names.forEachIndexed { i, t ->
-                NavigationDrawerItem(label = { Text(icons[i] + "  " + t) }, selected = tab == i,
+                NavigationDrawerItem(label = { Text(t) }, icon = { TvIcon(i, MaterialTheme.colorScheme.onSurface) }, selected = tab == i,
                     onClick = { tab = i; scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp))
             }
         }
     }) {
-        Scaffold(bottomBar = {
-            NavigationBar {
-                names.forEachIndexed { i, t ->
-                    NavigationBarItem(selected = tab == i, onClick = { tab = i }, icon = { Text(icons[i]) }, label = { Text(t, maxLines = 1) })
+        Column(Modifier.fillMaxSize()) {
+            Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).heightIn(min = 52.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextButton({ scope.launch { drawer.open() } }) { Text("☰", style = MaterialTheme.typography.titleLarge) }
+                if (tab == 1) {
+                    val cs = ChartStore.cs; val tk = ChartStore.tick
+                    val last = tk?.last ?: cs.last().c; val pct = tk?.pct ?: ((cs.last().c / cs.first().o - 1) * 100)
+                    val chg = last - last / (1 + pct / 100)
+                    Column {
+                        Text((SYMBOLS.firstOrNull { it.first == ChartStore.sym }?.second ?: ChartStore.sym) + " / USD", fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                        Text(fp(last) + "  " + sg(chg) + " (" + sg(pct) + "%)", color = if (pct >= 0) Color(0xFF089981) else Color(0xFFF23645), fontSize = 13.sp)
+                    }
+                } else Text(names[tab], style = MaterialTheme.typography.titleMedium)
+            }
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                when (tab) {
+                    0 -> Courses()
+                    1 -> CompositionLocalProvider(LocalContentColor provides Color.White) { Practice() }
+                    2 -> Stats()
+                    else -> SettingsScreen()
                 }
             }
-        }) { pad ->
-            Column(Modifier.padding(pad).fillMaxSize()) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton({ scope.launch { drawer.open() } }) { Text("☰", style = MaterialTheme.typography.titleLarge) }
-                    Text(names[tab], style = MaterialTheme.typography.titleMedium)
+            Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).height(46.dp), verticalAlignment = Alignment.CenterVertically) {
+                names.indices.forEach { i ->
+                    Box(Modifier.weight(1f).fillMaxHeight().clickable { tab = i }, contentAlignment = Alignment.Center) {
+                        TvIcon(i, if (tab == i) MaterialTheme.colorScheme.primary else Color.Gray)
+                    }
                 }
-                when (tab) { 0 -> Courses(); 1 -> Practice(); else -> Stats() }
             }
         }
+    }
+}
+
+@Composable
+fun SettingsScreen() {
+    val ctx = LocalContext.current
+    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("تم برنامه", style = MaterialTheme.typography.titleMedium)
+        listOf("روشن", "تیره", "خودکار (مطابق سیستم)").forEachIndexed { i, n ->
+            Row(Modifier.fillMaxWidth().clickable { ThemeStore.mode = i; ctx.getSharedPreferences("app", 0).edit().putInt("theme", i).apply() }, verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(ThemeStore.mode == i, null); Text("  " + n)
+            }
+        }
+        Text("نکته: صفحه‌ی چارت همیشه تیره نمایش داده می‌شود.", fontSize = 12.sp, color = Color.Gray)
     }
 }
 

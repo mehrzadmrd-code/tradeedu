@@ -272,8 +272,6 @@ fun Practice() {
 
     Column(Modifier.fillMaxSize().background(Color.Black)) {
         Column(Modifier.padding(horizontal = 12.dp)) {
-            Text(SYMBOLS.first { it.first == sym }.second + " / USD", fontSize = 18.sp, fontWeight = FontWeight.Medium)
-            Text(fp(last) + "  " + sg(chg) + " (" + sg(pct) + "%)", color = hc, fontSize = 15.sp)
             if (mode != 0) Text("ابزار «" + tools[mode] + "» فعال است؛ روی چارت لمس کن" + if (mode >= 2 && mode != 5) " (دو نقطه)" else "", fontSize = 11.sp, color = Color(0xFFFFC107))
             else if (status.isNotEmpty()) Text(status, fontSize = 11.sp, color = Color.Gray)
         }
