@@ -22,6 +22,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ThemeStore.mode = getSharedPreferences("app", 0).getInt("theme", 2)
+        ChartStore.pref = getSharedPreferences("app", 0).getString("src", "") ?: ""
         setContent {
             val dark = when (ThemeStore.mode) { 0 -> false; 1 -> true; else -> isSystemInDarkTheme() }
             MaterialTheme(colorScheme = if (dark) TgScheme else TgLight) {

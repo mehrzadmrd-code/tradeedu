@@ -24,7 +24,7 @@ fun sampleCandles(n: Int = 120, seed: Int = 7): List<Candle> {
     }
 }
 
-class Analysis(private val cs: List<Candle>) {
+class Analysis(val cs: List<Candle>) {
     val atr = cs.map { it.h - it.l }.average().coerceAtLeast(1e-9)
     val tol = atr * 0.5
 
@@ -70,6 +70,60 @@ class Analysis(private val cs: List<Candle>) {
             if (n < 2 && !covered(lv)) { r += Feedback(false, "سطح مهم ${fp(lv.price)} (${lv.touches} برخورد) را رسم نکرده‌ای."); n++ }
         }
         return r
+    }
+
+    fun auto(I: Inds): TA {
+        val a = cs.size - 1; val last = cs[a].c
+        val hs = pivots.filter { it.high }.takeLast(2); val ls = pivots.filter { !it.high }.takeLast(2)
+        val hh = hs.size == 2 && hs[1].price > hs[0].price + tol * 0.3; val lh = hs.size == 2 && hs[1].price < hs[0].price - tol * 0.3
+        val hl = ls.size == 2 && ls[1].price > ls[0].price + tol * 0.3; val ll = ls.size == 2 && ls[1].price < ls[0].price - tol * 0.3
+        val up = hh && hl; val down = lh && ll
+        val trend = if (up) "صعودی (سقف و کف بالاتر)" else if (down) "نزولی (سقف و کف پایین‌تر)" else "خنثی / رنج"
+        val sup = levels.filter { it.price < last }.sortedByDescending { it.price }.take(2)
+        val rs = levels.filter { it.price > last }.sortedBy { it.price }.take(2)
+        val pts = if (up) ls else if (down) hs else emptyList()
+        var line: Drawn.TLine? = null
+        if (pts.size == 2 && pts[1].i > pts[0].i) {
+            val d = Drawn.TLine(pts[0].i.toDouble(), pts[0].price, pts[1].i.toDouble(), pts[1].price)
+            if (gradeTrend(d).ok) { val s = (d.p2 - d.p1) / (d.i2 - d.i1); line = Drawn.TLine(d.i1, d.p1, a.toDouble(), d.p2 + s * (a - d.i2)) }
+        }
+        val c = cs[a]; val p = cs[a - 1]; val body = abs(c.c - c.o); val rg = (c.h - c.l).coerceAtLeast(1e-9)
+        val uw = c.h - max(c.o, c.c); val lw = min(c.o, c.c) - c.l
+        val notes = mutableListOf<String>(); var score = 0
+        if (up) score += 2 else if (down) score -= 2
+        if (c.c > c.o && p.c < p.o && c.c >= p.o && c.o <= p.c) { notes += "انگالف صعودی روی آخرین کندل"; score++ }
+        if (c.c < c.o && p.c > p.o && c.c <= p.o && c.o >= p.c) { notes += "انگالف نزولی روی آخرین کندل"; score-- }
+        if (body > 0 && lw >= 2 * body && uw <= body) { notes += "چکش/پین‌بار صعودی (سایه‌ی پایین بلند)"; score++ }
+        if (body > 0 && uw >= 2 * body && lw <= body) { notes += "ستاره‌ی دنباله‌دار/پین‌بار نزولی (سایه‌ی بالا بلند)"; score-- }
+        if (body <= rg * 0.1) notes += "دوجی؛ نشانه‌ی تردید بازار"
+        val e = I.e50[a]; val hist = I.mc.third; val rsi = I.rs[a]
+        if (last > e) { notes += "قیمت بالای EMA50 (فشار خریدار)"; score++ } else { notes += "قیمت زیر EMA50 (فشار فروشنده)"; score-- }
+        if (hist[a] > 0 && hist[a - 1] <= 0) { notes += "تقاطع صعودی MACD"; score++ }
+        else if (hist[a] < 0 && hist[a - 1] >= 0) { notes += "تقاطع نزولی MACD"; score-- }
+        else if (hist[a] > 0) score++ else score--
+        if (!rsi.isNaN()) {
+            if (rsi > 70) { notes += "RSI ${f1(rsi)}: اشباع خرید؛ احتمال اصلاح"; score-- }
+            else if (rsi < 30) { notes += "RSI ${f1(rsi)}: اشباع فروش؛ احتمال برگشت"; score++ }
+        }
+        val bias = if (score >= 3) "صعودی" else if (score <= -3) "نزولی" else "خنثی"
+        val s1 = sup.firstOrNull(); val r1 = rs.firstOrNull()
+        var rrOk = false
+        val plan = if (bias == "صعودی" && s1 != null && r1 != null) {
+            val sl = s1.lo - atr * 0.5; val rr = (r1.price - s1.price) / (s1.price - sl).coerceAtLeast(1e-9); rrOk = rr >= 1.5
+            "سناریوی آموزشی: در پولبک به حمایت ${fp(s1.price)} و با تأیید کندلی خرید؛ حد ضرر ${fp(sl)}، هدف ${fp(r1.price)}، نسبت ریسک به ریوارد ${f1(rr)}."
+        } else if (bias == "نزولی" && s1 != null && r1 != null) {
+            val sl = r1.hi + atr * 0.5; val rr = (r1.price - s1.price) / (sl - r1.price).coerceAtLeast(1e-9); rrOk = rr >= 1.5
+            "سناریوی آموزشی: در پولبک به مقاومت ${fp(r1.price)} و با تأیید کندلی فروش؛ حد ضرر ${fp(sl)}، هدف ${fp(s1.price)}، نسبت ریسک به ریوارد ${f1(rr)}."
+        } else "سناریو: تمایل مشخصی نیست؛ منتظر شکست معتبر یا تأیید بمان و وارد نشو."
+        val dir = if (bias == "صعودی") 1 else if (bias == "نزولی") -1 else 0
+        val near = (sup + rs).minOfOrNull { abs(it.price - last) }
+        val checks = listOf(
+            (up || down) to "ساختار بازار مشخص است (سقف و کف‌های پایدار)",
+            (dir > 0 && up || dir < 0 && down) to "جهت تحلیل هم‌جهت با روند اصلی است",
+            (near != null && near <= atr * 2) to "قیمت نزدیک یک سطح معتبر است (ورود دور از سطح ریسک بالایی دارد)",
+            (dir != 0 && (dir > 0) == (last > e) && (dir > 0) == (hist[a] > 0)) to "EMA50 و MACD با جهت تحلیل هم‌سو هستند",
+            rrOk to "نسبت ریسک به ریوارد حداقل ۱.۵ است")
+        return TA(trend, bias, sup, rs, line, notes, checks, plan)
     }
 
     private fun gradeH(d: Drawn.HLine): Feedback {
@@ -124,3 +178,5 @@ class Analysis(private val cs: List<Candle>) {
         return Feedback(true, "فیبوناچی درست؛ دو سر روی سقف و کف واقعی یک ${if (up) "موج صعودی" else "موج نزولی"} به اندازه‌ی ${fp(top - bot)} قرار دارد.")
     }
 }
+
+data class TA(val trend: String, val bias: String, val supports: List<Level>, val resists: List<Level>, val line: Drawn.TLine?, val notes: List<String>, val checks: List<Pair<Boolean, String>>, val plan: String)

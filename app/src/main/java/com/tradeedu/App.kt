@@ -24,6 +24,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -84,8 +86,19 @@ fun App() {
     val bar = if (tab == 1) Color.Black else MaterialTheme.colorScheme.surface
     val fg = if (tab == 1) Color.White else MaterialTheme.colorScheme.onSurface
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().background(bar).heightIn(min = 48.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(if (tab == 1) (SYMBOLS.firstOrNull { it.first == ChartStore.sym }?.second ?: ChartStore.sym) else names[tab], color = fg, fontSize = 18.sp, fontWeight = FontWeight.Medium)
+        Row(Modifier.fillMaxWidth().background(bar).heightIn(min = 48.dp).padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (tab == 1) {
+                Spacer(Modifier.weight(1f))
+                val cs = ChartStore.cs; val tk = ChartStore.tick
+                val last = tk?.last ?: cs.last().c; val pct = tk?.pct ?: ((cs.last().c / cs.first().o - 1) * 100)
+                val chg = last - last / (1 + pct / 100)
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(SYMBOLS.firstOrNull { it.first == ChartStore.sym }?.second ?: ChartStore.sym, color = fg, fontSize = 17.sp, fontWeight = FontWeight.Medium, lineHeight = 20.sp)
+                    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                        Text(fp(last) + "  " + sgp(chg, last) + " (" + sgc(pct) + "%)", color = if (pct >= 0) Color(0xFF089981) else Color(0xFFF23645), fontSize = 12.sp, lineHeight = 14.sp)
+                    }
+                }
+            } else Text(names[tab], color = fg, fontSize = 18.sp, fontWeight = FontWeight.Medium)
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when (tab) {
@@ -116,6 +129,13 @@ fun SettingsScreen() {
             }
         }
         Text("نکته: صفحه‌ی چارت همیشه تیره نمایش داده می‌شود.", fontSize = 12.sp, color = Color.Gray)
+        Text("منبع داده‌ی چارت", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
+        listOf("" to "خودکار (پیشنهادی)", "Binance" to "Binance", "OKX" to "OKX", "KuCoin" to "KuCoin", "Gate" to "Gate.io", "Yahoo" to "Yahoo Finance").forEach { (k, n) ->
+            Row(Modifier.fillMaxWidth().clickable { ChartStore.pref = k; ChartStore.src = ""; ChartStore.key = ""; ChartStore.live = false; ctx.getSharedPreferences("app", 0).edit().putString("src", k).apply() }, verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(ChartStore.pref == k, null); Text("  " + n)
+            }
+        }
+        Text("اگر نمادی بدون VPN به‌روز نمی‌شود، منبع دیگری را انتخاب کن.", fontSize = 12.sp, color = Color.Gray)
     }
 }
 

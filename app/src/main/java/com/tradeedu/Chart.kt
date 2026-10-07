@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -39,18 +40,25 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
 import kotlin.math.floor
+import kotlin.math.roundToInt
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.graphics.Path
 import kotlinx.coroutines.delay
 import androidx.compose.ui.platform.LocalContext
 
-class Sym(val key: String, val name: String, val bin: String? = null, val okx: String? = null, val kc: String? = null, val yh: String? = null)
+class Sym(val key: String, val name: String, val bin: String? = null, val okx: String? = null, val kc: String? = null, val gt: String? = null, val yh: String? = null)
 val SYMS = listOf(
-    Sym("XAUUSD", "طلا (XAU)", bin = "PAXGUSDT", okx = "PAXG-USDT", yh = "XAUUSD=X"),
+    Sym("XAUUSD", "طلا (XAU)", bin = "PAXGUSDT", okx = "XAUT-USDT", kc = "XAUT-USDT", gt = "PAXG_USDT", yh = "GC=F"),
     Sym("EURUSD", "یورو (EUR)", bin = "EURUSDT", yh = "EURUSD=X"),
     Sym("GBPUSD", "پوند (GBP)", bin = "GBPUSDT", yh = "GBPUSD=X"),
     Sym("USDJPY", "ین (JPY)", yh = "USDJPY=X"),
-    Sym("BTCUSD", "بیت‌کوین", bin = "BTCUSDT", okx = "BTC-USDT", kc = "BTC-USDT", yh = "BTC-USD"),
-    Sym("ETHUSD", "اتریوم", bin = "ETHUSDT", okx = "ETH-USDT", kc = "ETH-USDT", yh = "ETH-USD"))
+    Sym("BTCUSD", "بیت‌کوین", bin = "BTCUSDT", okx = "BTC-USDT", kc = "BTC-USDT", gt = "BTC_USDT", yh = "BTC-USD"),
+    Sym("ETHUSD", "اتریوم", bin = "ETHUSDT", okx = "ETH-USDT", kc = "ETH-USDT", gt = "ETH_USDT", yh = "ETH-USD"))
 val SYMBOLS = SYMS.map { it.key to it.name }
 val TFS = listOf("1m", "5m", "15m", "1h", "4h", "1d", "1w")
 data class Tick(val last: Double, val pct: Double, val hi: Double, val lo: Double, val vol: Double)
@@ -75,6 +83,7 @@ private fun parseYh(t: String): List<Candle> {
     }
     return out
 }
+private fun parseGt(t: String): List<Candle> { val a = JSONArray(t); return List(a.length()) { val k = a.getJSONArray(it); Candle(k.getString(5).toDouble(), k.getString(3).toDouble(), k.getString(4).toDouble(), k.getString(2).toDouble(), k.getString(1).toDouble(), k.getString(0).toLong() * 1000) } }
 private fun agg(cs: List<Candle>, ms: Long): List<Candle> = cs.groupBy { it.t / ms }.toSortedMap().values.map { g -> Candle(g.first().o, g.maxOf { it.h }, g.minOf { it.l }, g.last().c, g.sumOf { it.v }, g.first().t) }
 
 fun tickFrom(cs: List<Candle>): Tick {
@@ -85,19 +94,30 @@ fun tickFrom(cs: List<Candle>): Tick {
 
 suspend fun fetchCandles(sym: String, tf: String, limit: Int = 300): List<Candle>? = withContext(Dispatchers.IO) {
     val s = SYMS.firstOrNull { it.key == sym } ?: SYMS[0]
+    val req = max(limit, 30); val ms = TFMS[tf] ?: 60_000L
     val okxBar = mapOf("1m" to "1m", "5m" to "5m", "15m" to "15m", "1h" to "1H", "4h" to "4H", "1d" to "1D", "1w" to "1W")[tf]
     val kcType = mapOf("1m" to "1min", "5m" to "5min", "15m" to "15min", "1h" to "1hour", "4h" to "4hour", "1d" to "1day", "1w" to "1week")[tf]
+    val gtI = mapOf("1m" to "1m", "5m" to "5m", "15m" to "15m", "1h" to "1h", "4h" to "4h", "1d" to "1d", "1w" to "7d")[tf]
     val yp = mapOf("1m" to ("1m" to "1d"), "5m" to ("5m" to "5d"), "15m" to ("15m" to "5d"), "1h" to ("60m" to "1mo"), "4h" to ("60m" to "3mo"), "1d" to ("1d" to "1y"), "1w" to ("1wk" to "5y"))[tf] ?: ("15m" to "5d")
     fun <T> tr(f: () -> T?): T? = try { f() } catch (e: Exception) { null }
     val all = listOf<Pair<String, () -> List<Candle>?>>(
-        "Binance" to { s.bin?.let { b -> BIN_HOSTS.firstNotNullOfOrNull { h -> tr { parseBin(get("https://$h/api/v3/klines?symbol=$b&interval=$tf&limit=$limit")) } } } },
-        "OKX" to { s.okx?.let { id -> tr { parseOkx(get("https://www.okx.com/api/v5/market/candles?instId=$id&bar=$okxBar&limit=$limit")) } } },
+        "Binance" to { s.bin?.let { b -> BIN_HOSTS.firstNotNullOfOrNull { h -> tr { parseBin(get("https://$h/api/v3/klines?symbol=$b&interval=$tf&limit=$req")) } } } },
+        "OKX" to { s.okx?.let { id -> tr { parseOkx(get("https://www.okx.com/api/v5/market/candles?instId=$id&bar=$okxBar&limit=$req")) } } },
         "KuCoin" to { s.kc?.let { id -> tr { parseKc(get("https://api.kucoin.com/api/v1/market/candles?type=$kcType&symbol=$id")) } } },
+        "Gate" to { s.gt?.let { id -> tr { parseGt(get("https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair=$id&interval=$gtI&limit=$req")) } } },
         "Yahoo" to { s.yh?.let { id -> tr { parseYh(get("https://query1.finance.yahoo.com/v8/finance/chart/" + java.net.URLEncoder.encode(id, "UTF-8") + "?interval=${yp.first}&range=${yp.second}")).let { if (tf == "4h") agg(it, 14_400_000L) else it } } } })
-    val order = if (S.src.isNotEmpty()) all.sortedBy { if (it.first == S.src) 0 else 1 }
-        else if (s.bin == null || s.key == "XAUUSD") all.sortedBy { if (it.first == "Yahoo") 0 else 1 } else all
-    for ((n, f) in order) { val r = f(); if (r != null && r.size > 10) { S.src = n; return@withContext r.takeLast(limit) } }
-    null
+    val first = if (S.pref.isNotEmpty()) S.pref else S.src
+    val order = if (first.isNotEmpty()) all.sortedBy { if (it.first == first) 0 else 1 }
+        else if (s.bin == null) all.sortedBy { if (it.first == "Yahoo") 0 else 1 } else all
+    var fb: Pair<String, List<Candle>>? = null
+    val maxAge = max(3 * ms, 900_000L)
+    for ((n, f) in order) {
+        val r = f() ?: continue
+        if (r.size <= 10) continue
+        if (System.currentTimeMillis() - r.last().t <= maxAge) { S.src = n; return@withContext r.takeLast(limit) }
+        if (fb == null) fb = n to r
+    }
+    fb?.let { S.src = it.first; it.second.takeLast(limit) }
 }
 
 suspend fun fetchTick(sym: String): Tick? = withContext(Dispatchers.IO) {
@@ -247,6 +267,9 @@ fun Practice() {
     var vz by S::vz
     var voff by S::voff
     var sel by remember { mutableIntStateOf(-1) }
+    var bw by remember { mutableIntStateOf(0) }
+    var bh by remember { mutableIntStateOf(0) }
+    var auto by S::auto
     var selH by remember { mutableIntStateOf(0) }
     val ctx = LocalContext.current
     val prefs = remember { ctx.getSharedPreferences("chart", 0) }
@@ -268,6 +291,7 @@ fun Practice() {
     var graded by remember { mutableStateOf(false) }
     val an = remember(cs) { Analysis(cs) }
     val I = remember(cs) { Inds(cs) }
+    val ta = remember(cs, auto) { if (auto) an.auto(I) else null }
     val df = remember(tf) { SimpleDateFormat(if (tf.endsWith("d") || tf.endsWith("w")) "yyyy-MM-dd" else "HH:mm", Locale.US) }
     val paint = remember { android.graphics.Paint().apply { isAntiAlias = true } }
     LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); delay(1000) } }
@@ -281,10 +305,10 @@ fun Practice() {
             val ok = r != null && r.size > 30
             val d = if (ok) r!! else sampleCandles()
             lines.clear(); sel = -1; pending = null; res = emptyList(); graded = false
-            vis = min(80f, d.size.toFloat()); off = d.size - vis; vz = 1f; voff = 0.0
+            vis = min(80f, d.size.toFloat()); off = d.size - vis + max(8f, vis * 0.15f); vz = 1f; voff = 0.0
             cs = d; S.live = ok; S.key = key
             if (ok) lines.addAll(decode(prefs.getString("d_$key", "") ?: "", d, TFMS[tf] ?: 60_000L))
-            status = if (ok) "منبع داده: " + S.src else "هیچ منبع داده‌ای در دسترس نبود؛ داده‌ی نمونه نمایش داده می‌شود"
+            status = if (ok) "منبع: " + S.src + " • آخرین کندل " + hhmm(d.last().t) else "هیچ منبع داده‌ای در دسترس نبود؛ داده‌ی نمونه نمایش داده می‌شود"
             tick = if (ok) tickFrom(d) else null
         }
         while (S.live) {
@@ -293,7 +317,7 @@ fun Practice() {
             if (r != null && r.isNotEmpty()) {
                 val l = cs.toMutableList(); val atEnd = off + vis >= l.size - 0.5f
                 for (k in r) { if (k.t == l.last().t) l[l.lastIndex] = k else if (k.t > l.last().t) { l.add(k); if (atEnd) off += 1f } }
-                cs = l
+                cs = l; status = "منبع: " + S.src + " • آخرین کندل " + hhmm(l.last().t)
             }
             tick = tickFrom(cs)
         }
@@ -313,11 +337,10 @@ fun Practice() {
 
     Column(Modifier.fillMaxSize().background(Color.Black)) {
         Column(Modifier.padding(horizontal = 12.dp)) {
-            Text(fp(last) + "  " + sg(chg) + " (" + sg(pct) + "%)", color = hc, fontSize = 14.sp)
             if (mode != 0) Text("ابزار «" + tools[mode] + "» فعال است؛ روی چارت لمس کن" + if (mode >= 2 && mode != 5) " (دو نقطه)" else "", fontSize = 11.sp, color = Color(0xFFFFC107))
             else if (status.isNotEmpty()) Text(status, fontSize = 11.sp, color = Color.Gray)
         }
-        Box(Modifier.fillMaxWidth().weight(1f)) {
+        Box(Modifier.fillMaxWidth().weight(1f).onSizeChanged { bw = it.width; bh = it.height }) {
         Canvas(Modifier.fillMaxSize().background(Color.Black)
             .pointerInput(cs) {
                 detectTapGestures { p ->
@@ -346,7 +369,7 @@ fun Practice() {
             .pointerInput(cs) {
                 detectTransformGestures { c, pan, zoom, _ ->
                     val pw = size.width - AXIS.toPx(); val ph = size.height - 22.dp.toPx()
-                    fun setVis(nv: Float) { val re = off + vis; vis = nv.coerceIn(15f, cs.size.toFloat()); off = (re - vis).coerceIn(0f, max(0f, cs.size - vis)) }
+                    fun setVis(nv: Float) { val re = off + vis; vis = nv.coerceIn(15f, cs.size.toFloat()); off = (re - vis).coerceIn(0f, maxOff(cs.size, vis)) }
                     val range = rng.second - rng.first
                     if (c.x > pw) vz = (vz * (1f + pan.y / 400f)).coerceIn(0.2f, 8f)
                     else if (c.y > ph) setVis(vis * (1f - pan.x / 400f))
@@ -355,7 +378,7 @@ fun Practice() {
                         lines[sel] = moveD(lines[sel], selH, (pan.x / pw * vis).toDouble(), -(pan.y / ph * range))
                         graded = false; res = emptyList()
                     } else {
-                        off = (off - pan.x / pw * vis).coerceIn(0f, max(0f, cs.size - vis))
+                        off = (off - pan.x / pw * vis).coerceIn(0f, maxOff(cs.size, vis))
                         voff += pan.y / ph * range
                     }
                 }
@@ -373,13 +396,14 @@ fun Practice() {
             for (g in 0..7) {
                 val p = lo + (hi - lo) * g / 7; val yy = y(p)
                 if (grid) drawLine(gl, Offset(0f, yy), Offset(pw, yy), 1f)
-                nc.drawText(fp(p), pw + 6.dp.toPx(), yy + 4.dp.toPx(), paint)
+                if (abs(yy - y(cs.last().c)) > 22.dp.toPx()) nc.drawText(fp(p), pw + 6.dp.toPx(), yy + 4.dp.toPx(), paint)
             }
             paint.textAlign = android.graphics.Paint.Align.CENTER
             for (k in 0..4) {
-                val i = (off + vis * (k + 0.5f) / 5).toInt().coerceIn(0, cs.size - 1)
+                val i = (off + vis * (k + 0.5f) / 5).toInt()
+                val tt = if (i < cs.size) cs[i.coerceAtLeast(0)].t else cs.last().t + (i - (cs.size - 1)) * (TFMS[tf] ?: 60_000L)
                 if (grid) drawLine(gl, Offset(x(i.toDouble()), 0f), Offset(x(i.toDouble()), ph), 1f)
-                if (cs[i].t > 0) nc.drawText(df.format(Date(cs[i].t)), x(i.toDouble()), ph + 16.dp.toPx(), paint)
+                if (tt > 0) nc.drawText(df.format(Date(tt)), x(i.toDouble()), ph + 16.dp.toPx(), paint)
             }
             clipRect(0f, 0f, pw, ph) {
                 when (ctype) {
@@ -398,6 +422,17 @@ fun Practice() {
                 if ("EMA" in ovs) series(I.e50, a, b, Color(0xFFFFA726), xs, ys)
                 if ("BOLL" in ovs) { series(I.bb.first, a, b, Color(0xFFFF6D00), xs, ys); series(I.bb.second, a, b, Color(0xFF2962FF), xs, ys); series(I.bb.third, a, b, Color(0xFF2962FF), xs, ys) }
                 if ("SAR" in ovs) for (i in a..b) { val v = I.sr[i]; if (!v.isNaN()) drawCircle(Color.White, 2.5.dp.toPx(), Offset(x(i.toDouble()), y(v))) }
+                ta?.let { t ->
+                    val dash = PathEffect.dashPathEffect(floatArrayOf(14f, 8f))
+                    paint.textAlign = android.graphics.Paint.Align.LEFT; paint.textSize = 10.sp.toPx()
+                    (t.supports.map { it to true } + t.resists.map { it to false }).forEach { (lv, sup) ->
+                        val col = if (sup) gc else rc
+                        drawRect(col.copy(alpha = 0.12f), Offset(0f, y(lv.hi)), Size(pw, max(y(lv.lo) - y(lv.hi), 3f)))
+                        drawLine(col, Offset(0f, y(lv.price)), Offset(pw, y(lv.price)), 1.5f, pathEffect = dash)
+                        paint.color = col.toArgb(); nc.drawText((if (sup) "S " else "R ") + fp(lv.price) + " ×" + lv.touches, 6.dp.toPx(), y(lv.price) - 3.dp.toPx(), paint)
+                    }
+                    t.line?.let { drawLine(Color(0xFFFFA726), Offset(x(it.i1), y(it.p1)), Offset(x(it.i2), y(it.p2)), 3f) }
+                }
                 lines.forEachIndexed { k, d ->
                     val g = res.getOrNull(k)
                     val col = if (!graded || g == null || g.msg.startsWith("ⓘ")) Color(0xFFFFC107) else if (g.ok) Color(0xFF4CAF50) else Color(0xFFFF5252)
@@ -445,9 +480,14 @@ fun Practice() {
                 nc.drawText(tx, pw + 5.dp.toPx(), ly + 13.dp.toPx(), paint)
             }
         }
-        Surface(shape = RoundedCornerShape(50), color = if (lines.isEmpty()) Color(0xFF3A3F47) else Color(0xFF2962FF),
-            modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp).clickable { if (lines.isNotEmpty()) { sel = -1; res = an.grade(lines.toList()); graded = true; dlg = "res" } }) {
-            Text("✓ تصحیح" + if (lines.isEmpty()) "" else " (" + lines.size + ")", Modifier.padding(horizontal = 16.dp, vertical = 7.dp), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        Box(Modifier.align(Alignment.TopCenter).padding(top = 8.dp)
+            .offset { IntOffset(S.capX.roundToInt(), S.capY.roundToInt()) }
+            .clip(RoundedCornerShape(50))
+            .background(Brush.verticalGradient(listOf(Color(if (lines.isEmpty()) 0x22FFFFFF else 0x55FFFFFF), Color(0x14FFFFFF))))
+            .border(1.dp, Color(0x66FFFFFF), RoundedCornerShape(50))
+            .pointerInput(Unit) { detectTapGestures(onLongPress = {}, onTap = { if (lines.isNotEmpty()) { sel = -1; res = Analysis(cs).grade(lines.toList()); graded = true; dlg = "res" } }) }
+            .pointerInput(Unit) { detectDragGesturesAfterLongPress(onDrag = { ch, d -> ch.consume(); S.capX = (S.capX + d.x).coerceIn(-bw / 2f + 60f, bw / 2f - 60f); S.capY = (S.capY + d.y).coerceIn(0f, bh - 140f) }) }) {
+            Text("✓ تصحیح" + if (lines.isEmpty()) "" else " (" + lines.size + ")", Modifier.padding(horizontal = 18.dp, vertical = 8.dp), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
         }
         }
         subs.forEach { SubPane(it, cs, I, { off }, { vis }, gc, rc) }
@@ -475,6 +515,7 @@ fun Practice() {
                     DropdownMenuItem({ Text("🗑 پاک کردن همه") }, { menu = ""; lines.clear(); res = emptyList(); graded = false })
                 }
             }
+            Text("تحلیل", Modifier.clickable { auto = !auto; if (auto) dlg = "auto" }.padding(10.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold, color = if (auto) Color(0xFF2962FF) else Color.White)
             Text("ƒx", Modifier.clickable { dlg = "ind" }.padding(10.dp), fontSize = 20.sp)
             Text("⋯", Modifier.clickable { hub = true }.padding(10.dp), fontSize = 22.sp)
             Text("↶", Modifier.clickable { if (lines.isNotEmpty()) lines.removeAt(lines.size - 1); graded = false }.padding(10.dp), fontSize = 22.sp)
@@ -498,6 +539,18 @@ fun Practice() {
     if (dlg == "res") { val gr = res.filter { !it.msg.startsWith("ⓘ") }
         AlertDialog(onDismissRequest = ok, confirmButton = { TextButton(ok) { Text("باشه") } }, title = { Text("نمره: ${gr.count { it.ok }} از ${gr.size}") },
             text = { Column(Modifier.verticalScroll(rememberScrollState())) { res.forEach { Text((if (it.ok) "✅ " else "❌ ") + it.msg.removePrefix("ⓘ "), Modifier.padding(top = 6.dp)) } } }) }
+    if (dlg == "auto") ta?.let { t -> AlertDialog(onDismissRequest = ok, confirmButton = { TextButton(ok) { Text("باشه") } }, title = { Text("تحلیل خودکار") },
+        text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("روند: " + t.trend); Text("تمایل کلی: " + t.bias, fontWeight = FontWeight.Bold)
+            t.resists.reversed().forEach { Text("🔴 مقاومت " + fp(it.price) + " (" + it.touches + " برخورد)") }
+            t.supports.forEach { Text("🟢 حمایت " + fp(it.price) + " (" + it.touches + " برخورد)") }
+            if (t.line != null) Text("🟠 خط روند معتبر روی چارت رسم شد")
+            t.notes.forEach { Text("• " + it) }
+            Text("چک‌لیست اصولی", Modifier.padding(top = 6.dp), fontWeight = FontWeight.Bold)
+            t.checks.forEach { Text((if (it.first) "✅ " else "❌ ") + it.second) }
+            Text(t.plan, Modifier.padding(top = 6.dp))
+            Text("⚠️ این تحلیل خودکار و آموزشی است و توصیه‌ی مالی نیست.", fontSize = 11.sp, color = Color.Gray)
+        } }) }
     if (dlg == "ind") AlertDialog(onDismissRequest = ok, confirmButton = { TextButton(ok) { Text("تأیید") } }, title = { Text("اندیکاتورها") },
         text = { Column(Modifier.verticalScroll(rememberScrollState())) {
             Text("روی چارت", color = Color.Gray)
@@ -516,7 +569,7 @@ fun Practice() {
         } })
     if (dlg == "info") AlertDialog(onDismissRequest = ok, confirmButton = { TextButton(ok) { Text("بستن") } }, title = { Text(sym) },
         text = { Column {
-            Text("آخرین قیمت: " + fp(last)); Text("تغییر ۲۴ ساعت: " + sg(pct) + "%")
+            Text("آخرین قیمت: " + fp(last)); Text("تغییر ۲۴ ساعت: " + sgc(pct) + "%")
             Text("بیشترین: " + fp(tick?.hi ?: cs.maxOf { it.h })); Text("کمترین: " + fp(tick?.lo ?: cs.minOf { it.l })); Text("حجم ۲۴ ساعت: " + fv(tick?.vol ?: cs.sumOf { it.v }))
         } })
     if (dlg == "set") AlertDialog(onDismissRequest = ok, confirmButton = { TextButton(ok) { Text("تأیید") } }, title = { Text("تنظیمات چارت") },
@@ -526,7 +579,7 @@ fun Practice() {
 
 private val S = ChartStore
 object ChartStore {
-    var inited = false; var live = false; var key = ""; var src = ""
+    var inited = false; var live = false; var key = ""; var src = ""; var pref by mutableStateOf(""); var auto by mutableStateOf(false); var capX by mutableFloatStateOf(0f); var capY by mutableFloatStateOf(0f)
     var sym by mutableStateOf("XAUUSD"); var tf by mutableStateOf("15m")
     var cs by mutableStateOf<List<Candle>>(sampleCandles()); var tick by mutableStateOf<Tick?>(null)
     val ovs = mutableStateListOf<String>(); val subs = mutableStateListOf("VOL")
@@ -598,3 +651,8 @@ fun decode(s: String, cs: List<Candle>, ms: Long): List<Drawn> = s.split(";").fi
         }
     } catch (e: Exception) { null }
 }
+
+fun maxOff(n: Int, vis: Float) = max(0f, n - vis + max(8f, vis * 0.6f))
+fun sgp(v: Double, ref: Double) = (if (v >= 0) "+" else "−") + f2(abs(v), if (ref >= 100) 2 else if (ref >= 1) 4 else 6)
+fun sgc(v: Double) = (if (v >= 0) "+" else "−") + f2(abs(v), 2)
+fun hhmm(t: Long): String = SimpleDateFormat("HH:mm", Locale.US).format(Date(t))
