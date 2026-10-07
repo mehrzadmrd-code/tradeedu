@@ -11,6 +11,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
@@ -24,12 +25,13 @@ class MainActivity : ComponentActivity() {
         setContent {
             val dark = when (ThemeStore.mode) { 0 -> false; 1 -> true; else -> isSystemInDarkTheme() }
             MaterialTheme(colorScheme = if (dark) TgScheme else TgLight) {
-                val bar = MaterialTheme.colorScheme.surface
+                val bar = if (ThemeStore.tab == 1) Color.Black else MaterialTheme.colorScheme.surface
+                val lightBars = !dark && ThemeStore.tab != 1
                 val view = LocalView.current
                 SideEffect {
                     val w = (view.context as Activity).window
                     w.statusBarColor = bar.toArgb(); w.navigationBarColor = bar.toArgb()
-                    WindowCompat.getInsetsController(w, view).apply { isAppearanceLightStatusBars = !dark; isAppearanceLightNavigationBars = !dark }
+                    WindowCompat.getInsetsController(w, view).apply { isAppearanceLightStatusBars = lightBars; isAppearanceLightNavigationBars = lightBars }
                 }
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
                     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { App() }

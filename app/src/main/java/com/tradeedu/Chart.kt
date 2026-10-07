@@ -38,25 +38,66 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
+import kotlin.math.floor
 import androidx.compose.ui.graphics.Path
 import kotlinx.coroutines.delay
 import androidx.compose.ui.platform.LocalContext
 
-val SYMBOLS = listOf("BTCUSDT" to "بیت‌کوین", "ETHUSDT" to "اتریوم", "PAXGUSDT" to "طلا (XAU)", "EURUSDT" to "یورو", "GBPUSDT" to "پوند", "SOLUSDT" to "سولانا")
+class Sym(val key: String, val name: String, val bin: String? = null, val okx: String? = null, val kc: String? = null, val yh: String? = null)
+val SYMS = listOf(
+    Sym("XAUUSD", "طلا (XAU)", bin = "PAXGUSDT", okx = "PAXG-USDT", yh = "XAUUSD=X"),
+    Sym("EURUSD", "یورو (EUR)", bin = "EURUSDT", yh = "EURUSD=X"),
+    Sym("GBPUSD", "پوند (GBP)", bin = "GBPUSDT", yh = "GBPUSD=X"),
+    Sym("USDJPY", "ین (JPY)", yh = "USDJPY=X"),
+    Sym("BTCUSD", "بیت‌کوین", bin = "BTCUSDT", okx = "BTC-USDT", kc = "BTC-USDT", yh = "BTC-USD"),
+    Sym("ETHUSD", "اتریوم", bin = "ETHUSDT", okx = "ETH-USDT", kc = "ETH-USDT", yh = "ETH-USD"))
+val SYMBOLS = SYMS.map { it.key to it.name }
 val TFS = listOf("1m", "5m", "15m", "1h", "4h", "1d", "1w")
 data class Tick(val last: Double, val pct: Double, val hi: Double, val lo: Double, val vol: Double)
 
 private fun get(u: String): String {
     val c = URL(u).openConnection() as HttpURLConnection
-    c.connectTimeout = 8000; c.readTimeout = 8000
+    c.connectTimeout = 4000; c.readTimeout = 6000; c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13)")
     return c.inputStream.bufferedReader().readText()
+}
+private val BIN_HOSTS = listOf("data-api.binance.vision", "api.binance.com", "api1.binance.com", "api3.binance.com")
+private fun parseBin(t: String): List<Candle> { val a = JSONArray(t); return List(a.length()) { val k = a.getJSONArray(it); Candle(k.getString(1).toDouble(), k.getString(2).toDouble(), k.getString(3).toDouble(), k.getString(4).toDouble(), k.getString(5).toDouble(), k.getLong(0)) } }
+private fun parseOkx(t: String): List<Candle> { val a = JSONObject(t).getJSONArray("data"); return List(a.length()) { val k = a.getJSONArray(a.length() - 1 - it); Candle(k.getString(1).toDouble(), k.getString(2).toDouble(), k.getString(3).toDouble(), k.getString(4).toDouble(), k.getString(5).toDouble(), k.getString(0).toLong()) } }
+private fun parseKc(t: String): List<Candle> { val a = JSONObject(t).getJSONArray("data"); return List(a.length()) { val k = a.getJSONArray(a.length() - 1 - it); Candle(k.getString(1).toDouble(), k.getString(3).toDouble(), k.getString(4).toDouble(), k.getString(2).toDouble(), k.getString(5).toDouble(), k.getString(0).toLong() * 1000) } }
+private fun parseYh(t: String): List<Candle> {
+    val j = JSONObject(t).getJSONObject("chart").getJSONArray("result").getJSONObject(0)
+    val ts = j.getJSONArray("timestamp"); val q = j.getJSONObject("indicators").getJSONArray("quote").getJSONObject(0)
+    val o = q.getJSONArray("open"); val h = q.getJSONArray("high"); val l = q.getJSONArray("low"); val c = q.getJSONArray("close"); val v = q.optJSONArray("volume")
+    val out = ArrayList<Candle>()
+    for (i in 0 until ts.length()) {
+        if (o.isNull(i) || h.isNull(i) || l.isNull(i) || c.isNull(i)) continue
+        out.add(Candle(o.getDouble(i), h.getDouble(i), l.getDouble(i), c.getDouble(i), if (v == null || v.isNull(i)) 0.0 else v.getDouble(i), ts.getLong(i) * 1000))
+    }
+    return out
+}
+private fun agg(cs: List<Candle>, ms: Long): List<Candle> = cs.groupBy { it.t / ms }.toSortedMap().values.map { g -> Candle(g.first().o, g.maxOf { it.h }, g.minOf { it.l }, g.last().c, g.sumOf { it.v }, g.first().t) }
+
+fun tickFrom(cs: List<Candle>): Tick {
+    val l = cs.last(); val w = cs.filter { it.t >= l.t - 86_400_000L }.ifEmpty { cs }
+    val base = (cs.lastOrNull { it.t <= l.t - 86_400_000L } ?: cs.first()).c
+    return Tick(l.c, (l.c / base - 1) * 100, w.maxOf { it.h }, w.minOf { it.l }, w.sumOf { it.v })
 }
 
 suspend fun fetchCandles(sym: String, tf: String, limit: Int = 300): List<Candle>? = withContext(Dispatchers.IO) {
-    try {
-        val a = JSONArray(get("https://data-api.binance.vision/api/v3/klines?symbol=$sym&interval=$tf&limit=$limit"))
-        List(a.length()) { val k = a.getJSONArray(it); Candle(k.getString(1).toDouble(), k.getString(2).toDouble(), k.getString(3).toDouble(), k.getString(4).toDouble(), k.getString(5).toDouble(), k.getLong(0)) }
-    } catch (e: Exception) { null }
+    val s = SYMS.firstOrNull { it.key == sym } ?: SYMS[0]
+    val okxBar = mapOf("1m" to "1m", "5m" to "5m", "15m" to "15m", "1h" to "1H", "4h" to "4H", "1d" to "1D", "1w" to "1W")[tf]
+    val kcType = mapOf("1m" to "1min", "5m" to "5min", "15m" to "15min", "1h" to "1hour", "4h" to "4hour", "1d" to "1day", "1w" to "1week")[tf]
+    val yp = mapOf("1m" to ("1m" to "1d"), "5m" to ("5m" to "5d"), "15m" to ("15m" to "5d"), "1h" to ("60m" to "1mo"), "4h" to ("60m" to "3mo"), "1d" to ("1d" to "1y"), "1w" to ("1wk" to "5y"))[tf] ?: ("15m" to "5d")
+    fun <T> tr(f: () -> T?): T? = try { f() } catch (e: Exception) { null }
+    val all = listOf<Pair<String, () -> List<Candle>?>>(
+        "Binance" to { s.bin?.let { b -> BIN_HOSTS.firstNotNullOfOrNull { h -> tr { parseBin(get("https://$h/api/v3/klines?symbol=$b&interval=$tf&limit=$limit")) } } } },
+        "OKX" to { s.okx?.let { id -> tr { parseOkx(get("https://www.okx.com/api/v5/market/candles?instId=$id&bar=$okxBar&limit=$limit")) } } },
+        "KuCoin" to { s.kc?.let { id -> tr { parseKc(get("https://api.kucoin.com/api/v1/market/candles?type=$kcType&symbol=$id")) } } },
+        "Yahoo" to { s.yh?.let { id -> tr { parseYh(get("https://query1.finance.yahoo.com/v8/finance/chart/" + java.net.URLEncoder.encode(id, "UTF-8") + "?interval=${yp.first}&range=${yp.second}")).let { if (tf == "4h") agg(it, 14_400_000L) else it } } } })
+    val order = if (S.src.isNotEmpty()) all.sortedBy { if (it.first == S.src) 0 else 1 }
+        else if (s.bin == null || s.key == "XAUUSD") all.sortedBy { if (it.first == "Yahoo") 0 else 1 } else all
+    for ((n, f) in order) { val r = f(); if (r != null && r.size > 10) { S.src = n; return@withContext r.takeLast(limit) } }
+    null
 }
 
 suspend fun fetchTick(sym: String): Tick? = withContext(Dispatchers.IO) {
@@ -214,7 +255,7 @@ fun Practice() {
             S.inited = true
             prefs.getString("cfg", null)?.split("|")?.let { p ->
                 if (p.size == 6) {
-                    S.sym = p[0]; S.tf = p[1]; S.ctype = p[2].toIntOrNull() ?: 0; S.grid = p[3] == "true"
+                    S.sym = if (SYMS.any { it.key == p[0] }) p[0] else "XAUUSD"; S.tf = p[1]; S.ctype = p[2].toIntOrNull() ?: 0; S.grid = p[3] == "true"
                     S.ovs.clear(); S.ovs.addAll(p[4].split(",").filter { it.isNotEmpty() })
                     S.subs.clear(); S.subs.addAll(p[5].split(",").filter { it.isNotEmpty() })
                 }
@@ -231,7 +272,7 @@ fun Practice() {
     val paint = remember { android.graphics.Paint().apply { isAntiAlias = true } }
     LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); delay(1000) } }
     LaunchedEffect(Unit) { snapshotFlow { "$sym|$tf|$ctype|$grid|${ovs.joinToString(",")}|${subs.joinToString(",")}" }.collect { prefs.edit().putString("cfg", it).apply() } }
-    LaunchedEffect(Unit) { snapshotFlow { lines.toList() }.collect { if (S.live && S.key == "$sym|$tf" && cs[0].t > 0) prefs.edit().putString("d_" + S.key, encode(it, cs[0].t, TFMS[tf] ?: 60_000L)).apply() } }
+    LaunchedEffect(Unit) { snapshotFlow { lines.toList() }.collect { if (S.live && S.key == "$sym|$tf" && cs[0].t > 0) prefs.edit().putString("d_" + S.key, encode(it, cs, TFMS[tf] ?: 60_000L)).apply() } }
     LaunchedEffect(sym, tf) {
         val key = "$sym|$tf"
         if (S.key != key || !S.live) {
@@ -242,19 +283,19 @@ fun Practice() {
             lines.clear(); sel = -1; pending = null; res = emptyList(); graded = false
             vis = min(80f, d.size.toFloat()); off = d.size - vis; vz = 1f; voff = 0.0
             cs = d; S.live = ok; S.key = key
-            if (ok) lines.addAll(decode(prefs.getString("d_$key", "") ?: "", d[0].t, TFMS[tf] ?: 60_000L))
-            status = if (ok) "" else "اتصال برقرار نشد؛ داده‌ی نمونه (شاید VPN لازم باشد)"
-            tick = if (ok) fetchTick(sym) else null
+            if (ok) lines.addAll(decode(prefs.getString("d_$key", "") ?: "", d, TFMS[tf] ?: 60_000L))
+            status = if (ok) "منبع داده: " + S.src else "هیچ منبع داده‌ای در دسترس نبود؛ داده‌ی نمونه نمایش داده می‌شود"
+            tick = if (ok) tickFrom(d) else null
         }
         while (S.live) {
-            delay(2000)
+            delay(if (S.src == "Yahoo") 6000L else 2000L)
             val r = fetchCandles(sym, tf, 3)
             if (r != null && r.isNotEmpty()) {
                 val l = cs.toMutableList(); val atEnd = off + vis >= l.size - 0.5f
                 for (k in r) { if (k.t == l.last().t) l[l.lastIndex] = k else if (k.t > l.last().t) { l.add(k); if (atEnd) off += 1f } }
                 cs = l
             }
-            fetchTick(sym)?.let { tick = it }
+            tick = tickFrom(cs)
         }
     }
     val rng by remember { derivedStateOf {
@@ -272,10 +313,12 @@ fun Practice() {
 
     Column(Modifier.fillMaxSize().background(Color.Black)) {
         Column(Modifier.padding(horizontal = 12.dp)) {
+            Text(fp(last) + "  " + sg(chg) + " (" + sg(pct) + "%)", color = hc, fontSize = 14.sp)
             if (mode != 0) Text("ابزار «" + tools[mode] + "» فعال است؛ روی چارت لمس کن" + if (mode >= 2 && mode != 5) " (دو نقطه)" else "", fontSize = 11.sp, color = Color(0xFFFFC107))
             else if (status.isNotEmpty()) Text(status, fontSize = 11.sp, color = Color.Gray)
         }
-        Canvas(Modifier.fillMaxWidth().weight(1f).background(Color.Black)
+        Box(Modifier.fillMaxWidth().weight(1f)) {
+        Canvas(Modifier.fillMaxSize().background(Color.Black)
             .pointerInput(cs) {
                 detectTapGestures { p ->
                     val pw = size.width - AXIS.toPx(); val ph = size.height - 22.dp.toPx()
@@ -361,18 +404,13 @@ fun Practice() {
                     when (d) {
                         is Drawn.HLine -> drawLine(col, Offset(0f, y(d.price)), Offset(pw, y(d.price)), 3f)
                         is Drawn.VLine -> drawLine(col, Offset(x(d.i), 0f), Offset(x(d.i), ph), 3f)
-                        is Drawn.TLine -> {
-                            val s = (d.p2 - d.p1) / (d.i2 - d.i1)
-                            fun at(i: Double) = d.p1 + s * (i - d.i1)
-                            val i0 = off - 1.0; val i1 = off + vis + 1.0
-                            drawLine(col, Offset(x(i0), y(at(i0))), Offset(x(i1), y(at(i1))), 3f)
-                        }
+                        is Drawn.TLine -> drawLine(col, Offset(x(d.i1), y(d.p1)), Offset(x(d.i2), y(d.p2)), 3f)
                         is Drawn.Zone -> drawRect(col.copy(alpha = 0.25f), Offset(min(x(d.i1), x(d.i2)), min(y(d.p1), y(d.p2))), Size(abs(x(d.i2) - x(d.i1)), abs(y(d.p2) - y(d.p1))))
                         is Drawn.Fib -> {
-                            val xa = min(x(d.i1), x(d.i2)); paint.textAlign = android.graphics.Paint.Align.LEFT; paint.color = 0xFF9598A1.toInt(); paint.textSize = 10.sp.toPx()
+                            val xa = min(x(d.i1), x(d.i2)); val xb = max(x(d.i1), x(d.i2)); paint.textAlign = android.graphics.Paint.Align.LEFT; paint.color = 0xFF9598A1.toInt(); paint.textSize = 10.sp.toPx()
                             listOf(0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0).forEach { l ->
                                 val p = d.p2 + (d.p1 - d.p2) * l; val yy = y(p)
-                                drawLine(Color(0xFF787B86), Offset(xa, yy), Offset(pw, yy), 1.5f)
+                                drawLine(Color(0xFF787B86), Offset(xa, yy), Offset(xb, yy), 1.5f)
                                 nc.drawText(f2(l, 3) + " (" + fp(p) + ")", xa + 4.dp.toPx(), yy - 3.dp.toPx(), paint)
                             }
                         }
@@ -406,6 +444,11 @@ fun Practice() {
                 val tx = if (left >= 3600) String.format(Locale.US, "%d:%02d:%02d", left / 3600, left / 60 % 60, left % 60) else String.format(Locale.US, "%02d:%02d", left / 60, left % 60)
                 nc.drawText(tx, pw + 5.dp.toPx(), ly + 13.dp.toPx(), paint)
             }
+        }
+        Surface(shape = RoundedCornerShape(50), color = if (lines.isEmpty()) Color(0xFF3A3F47) else Color(0xFF2962FF),
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp).clickable { if (lines.isNotEmpty()) { sel = -1; res = an.grade(lines.toList()); graded = true; dlg = "res" } }) {
+            Text("✓ تصحیح" + if (lines.isEmpty()) "" else " (" + lines.size + ")", Modifier.padding(horizontal = 16.dp, vertical = 7.dp), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        }
         }
         subs.forEach { SubPane(it, cs, I, { off }, { vis }, gc, rc) }
         if (sel in 0 until lines.size) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -483,8 +526,8 @@ fun Practice() {
 
 private val S = ChartStore
 object ChartStore {
-    var inited = false; var live = false; var key = ""
-    var sym by mutableStateOf("PAXGUSDT"); var tf by mutableStateOf("15m")
+    var inited = false; var live = false; var key = ""; var src = ""
+    var sym by mutableStateOf("XAUUSD"); var tf by mutableStateOf("15m")
     var cs by mutableStateOf<List<Candle>>(sampleCandles()); var tick by mutableStateOf<Tick?>(null)
     val ovs = mutableStateListOf<String>(); val subs = mutableStateListOf("VOL")
     var ctype by mutableIntStateOf(0); var grid by mutableStateOf(true)
@@ -513,8 +556,10 @@ val FIBS = listOf(0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0)
 fun hit(d: Drawn, tx: Float, ty: Float, px: (Double) -> Float, py: (Double) -> Float, pw: Float, th: Float): Int {
     fun near(i: Double, p: Double) = abs(px(i) - tx) < th * 1.4f && abs(py(p) - ty) < th * 1.4f
     fun seg(x1: Float, y1: Float, x2: Float, y2: Float): Boolean {
-        val dx = x2 - x1; val dy = y2 - y1; val l = sqrt(dx * dx + dy * dy).coerceAtLeast(1f)
-        return abs(dy * (tx - x1) - dx * (ty - y1)) / l < th
+        val dx = x2 - x1; val dy = y2 - y1; val l2 = (dx * dx + dy * dy).coerceAtLeast(1f)
+        val u = (((tx - x1) * dx + (ty - y1) * dy) / l2).coerceIn(0f, 1f)
+        val cx = x1 + u * dx; val cy = y1 + u * dy
+        return sqrt((tx - cx) * (tx - cx) + (ty - cy) * (ty - cy)) < th
     }
     return when (d) {
         is Drawn.HLine -> if (abs(py(d.price) - ty) < th) 0 else -1
@@ -523,12 +568,12 @@ fun hit(d: Drawn, tx: Float, ty: Float, px: (Double) -> Float, py: (Double) -> F
         is Drawn.Zone -> if (near(d.i1, d.p1)) 1 else if (near(d.i2, d.p2)) 2
             else if (tx in min(px(d.i1), px(d.i2))..max(px(d.i1), px(d.i2)) && ty in min(py(d.p1), py(d.p2))..max(py(d.p1), py(d.p2))) 0 else -1
         is Drawn.Fib -> if (near(d.i1, d.p1)) 1 else if (near(d.i2, d.p2)) 2
-            else if (tx >= min(px(d.i1), px(d.i2)) && tx <= pw && FIBS.any { abs(py(d.p2 + (d.p1 - d.p2) * it) - ty) < th }) 0 else -1
+            else if (tx in min(px(d.i1), px(d.i2))..max(px(d.i1), px(d.i2)) && FIBS.any { abs(py(d.p2 + (d.p1 - d.p2) * it) - ty) < th }) 0 else -1
     }
 }
 
-fun encode(ls: List<Drawn>, t0: Long, ms: Long): String = ls.joinToString(";") { d ->
-    fun t(i: Double) = t0 + i * ms
+fun encode(ls: List<Drawn>, cs: List<Candle>, ms: Long): String = ls.joinToString(";") { d ->
+    fun t(i: Double): Long { val k = floor(i).toInt().coerceIn(0, cs.size - 1); return cs[k].t + ((i - k) * ms).toLong() }
     when (d) {
         is Drawn.HLine -> "H,${d.price}"
         is Drawn.VLine -> "V,${t(d.i)}"
@@ -538,10 +583,14 @@ fun encode(ls: List<Drawn>, t0: Long, ms: Long): String = ls.joinToString(";") {
     }
 }
 
-fun decode(s: String, t0: Long, ms: Long): List<Drawn> = s.split(";").filter { it.isNotBlank() }.mapNotNull { r ->
+fun decode(s: String, cs: List<Candle>, ms: Long): List<Drawn> = s.split(";").filter { it.isNotBlank() }.mapNotNull { r ->
     try {
         val p = r.split(",")
-        fun i(k: Int) = (p[k].toDouble() - t0) / ms
+        fun i(k: Int): Double {
+            val t = p[k].toLong(); var lo = 0; var hi = cs.size - 1
+            while (lo < hi) { val m = (lo + hi + 1) / 2; if (cs[m].t <= t) lo = m else hi = m - 1 }
+            return lo + (t - cs[lo].t).toDouble() / ms
+        }
         when (p[0]) {
             "H" -> Drawn.HLine(p[1].toDouble()); "V" -> Drawn.VLine(i(1))
             "T" -> Drawn.TLine(i(1), p[2].toDouble(), i(3), p[4].toDouble()); "Z" -> Drawn.Zone(i(1), p[2].toDouble(), i(3), p[4].toDouble())

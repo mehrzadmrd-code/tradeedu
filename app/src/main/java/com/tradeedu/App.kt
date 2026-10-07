@@ -34,7 +34,7 @@ val TgScheme = darkColorScheme(
     secondaryContainer = Color(0xFF2B5278)
 )
 
-object ThemeStore { var mode by mutableIntStateOf(2) }
+object ThemeStore { var mode by mutableIntStateOf(2); var tab by mutableIntStateOf(0) }
 
 val TgLight = lightColorScheme(
     primary = Color(0xFF2481CC), onPrimary = Color.White,
@@ -79,46 +79,26 @@ fun TvIcon(k: Int, col: Color) {
 
 @Composable
 fun App() {
-    val drawer = rememberDrawerState(DrawerValue.Closed)
-    val scope = rememberCoroutineScope()
-    var tab by remember { mutableIntStateOf(0) }
+    var tab by ThemeStore::tab
     val names = listOf("دوره‌ها", "تمرین چارت", "آمار پیشرفت", "تنظیمات")
-    ModalNavigationDrawer(drawerState = drawer, drawerContent = {
-        ModalDrawerSheet {
-            Text("آموزش ترید", Modifier.padding(20.dp), style = MaterialTheme.typography.headlineSmall)
-            Text("درس‌های کامل‌شده: ${Progress.done.size}", Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
-            names.forEachIndexed { i, t ->
-                NavigationDrawerItem(label = { Text(t) }, icon = { TvIcon(i, MaterialTheme.colorScheme.onSurface) }, selected = tab == i,
-                    onClick = { tab = i; scope.launch { drawer.close() } }, modifier = Modifier.padding(horizontal = 12.dp))
+    val bar = if (tab == 1) Color.Black else MaterialTheme.colorScheme.surface
+    val fg = if (tab == 1) Color.White else MaterialTheme.colorScheme.onSurface
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().background(bar).heightIn(min = 48.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(if (tab == 1) (SYMBOLS.firstOrNull { it.first == ChartStore.sym }?.second ?: ChartStore.sym) else names[tab], color = fg, fontSize = 18.sp, fontWeight = FontWeight.Medium)
+        }
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            when (tab) {
+                0 -> Courses()
+                1 -> CompositionLocalProvider(LocalContentColor provides Color.White) { Practice() }
+                2 -> Stats()
+                else -> SettingsScreen()
             }
         }
-    }) {
-        Column(Modifier.fillMaxSize()) {
-            Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).heightIn(min = 52.dp), verticalAlignment = Alignment.CenterVertically) {
-                TextButton({ scope.launch { drawer.open() } }) { Text("☰", style = MaterialTheme.typography.titleLarge) }
-                if (tab == 1) {
-                    val cs = ChartStore.cs; val tk = ChartStore.tick
-                    val last = tk?.last ?: cs.last().c; val pct = tk?.pct ?: ((cs.last().c / cs.first().o - 1) * 100)
-                    val chg = last - last / (1 + pct / 100)
-                    Column {
-                        Text((SYMBOLS.firstOrNull { it.first == ChartStore.sym }?.second ?: ChartStore.sym) + " / USD", fontSize = 16.sp, fontWeight = FontWeight.Medium)
-                        Text(fp(last) + "  " + sg(chg) + " (" + sg(pct) + "%)", color = if (pct >= 0) Color(0xFF089981) else Color(0xFFF23645), fontSize = 13.sp)
-                    }
-                } else Text(names[tab], style = MaterialTheme.typography.titleMedium)
-            }
-            Box(Modifier.weight(1f).fillMaxWidth()) {
-                when (tab) {
-                    0 -> Courses()
-                    1 -> CompositionLocalProvider(LocalContentColor provides Color.White) { Practice() }
-                    2 -> Stats()
-                    else -> SettingsScreen()
-                }
-            }
-            Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).height(46.dp), verticalAlignment = Alignment.CenterVertically) {
-                names.indices.forEach { i ->
-                    Box(Modifier.weight(1f).fillMaxHeight().clickable { tab = i }, contentAlignment = Alignment.Center) {
-                        TvIcon(i, if (tab == i) MaterialTheme.colorScheme.primary else Color.Gray)
-                    }
+        Row(Modifier.fillMaxWidth().background(bar).height(46.dp), verticalAlignment = Alignment.CenterVertically) {
+            names.indices.forEach { i ->
+                Box(Modifier.weight(1f).fillMaxHeight().clickable { tab = i }, contentAlignment = Alignment.Center) {
+                    TvIcon(i, if (tab == i) MaterialTheme.colorScheme.primary else Color.Gray)
                 }
             }
         }
