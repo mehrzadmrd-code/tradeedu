@@ -51,14 +51,16 @@ import androidx.compose.ui.graphics.Path
 import kotlinx.coroutines.delay
 import androidx.compose.ui.platform.LocalContext
 
-class Sym(val key: String, val name: String, val bin: String? = null, val okx: String? = null, val kc: String? = null, val gt: String? = null, val yh: String? = null)
+class Sym(val key: String, val name: String, val bin: String? = null, val okx: String? = null, val kc: String? = null, val gt: String? = null, val yh: String? = null, val sp: String? = null)
 val SYMS = listOf(
     Sym("XAUUSD", "طلا (XAU)", bin = "PAXGUSDT", okx = "XAUT-USDT", kc = "XAUT-USDT", gt = "PAXG_USDT", yh = "GC=F"),
     Sym("EURUSD", "یورو (EUR)", bin = "EURUSDT", yh = "EURUSD=X"),
     Sym("GBPUSD", "پوند (GBP)", bin = "GBPUSDT", yh = "GBPUSD=X"),
     Sym("USDJPY", "ین (JPY)", yh = "USDJPY=X"),
     Sym("BTCUSD", "بیت‌کوین", bin = "BTCUSDT", okx = "BTC-USDT", kc = "BTC-USDT", gt = "BTC_USDT", yh = "BTC-USD"),
-    Sym("ETHUSD", "اتریوم", bin = "ETHUSDT", okx = "ETH-USDT", kc = "ETH-USDT", gt = "ETH_USDT", yh = "ETH-USD"))
+    Sym("ETHUSD", "اتریوم", bin = "ETHUSDT", okx = "ETH-USDT", kc = "ETH-USDT", gt = "ETH_USDT", yh = "ETH-USD"),
+    Sym("USDTIRT", "تتر (تومان)", sp = "usdt"),
+    Sym("MELTED", "طلای آبشده (مثقال)", sp = "melted"))
 val SYMBOLS = SYMS.map { it.key to it.name }
 val TFS = listOf("1m", "5m", "15m", "1h", "4h", "1d", "1w")
 data class Tick(val last: Double, val pct: Double, val hi: Double, val lo: Double, val vol: Double)
@@ -84,6 +86,44 @@ private fun parseYh(t: String): List<Candle> {
     return out
 }
 private fun parseGt(t: String): List<Candle> { val a = JSONArray(t); return List(a.length()) { val k = a.getJSONArray(it); Candle(k.getString(5).toDouble(), k.getString(3).toDouble(), k.getString(4).toDouble(), k.getString(2).toDouble(), k.getString(1).toDouble(), k.getString(0).toLong() * 1000) } }
+fun norm(cs: List<Candle>, ms: Long): List<Candle> {
+    if (ms >= 86_400_000L) return cs
+    return cs.groupBy { it.t / ms }.toSortedMap().map { (k, v) -> Candle(v.first().o, v.maxOf { it.h }, v.minOf { it.l }, v.last().c, v.sumOf { it.v }, k * ms) }
+}
+private fun parseUdf(t: String): List<Candle> {
+    val j = JSONObject(t); if (j.optString("s") != "ok") return emptyList()
+    val ts = j.getJSONArray("t"); val o = j.getJSONArray("o"); val h = j.getJSONArray("h"); val l = j.getJSONArray("l"); val c = j.getJSONArray("c"); val v = j.optJSONArray("v")
+    return List(ts.length()) { Candle(o.getDouble(it), h.getDouble(it), l.getDouble(it), c.getDouble(it), v?.optDouble(it, 0.0) ?: 0.0, ts.getLong(it) * 1000) }
+}
+private fun fetchUsdt(tf: String, req: Int): Pair<String, List<Candle>>? {
+    val ms = TFMS[tf] ?: 60_000L
+    val res = mapOf("1m" to "1", "5m" to "5", "15m" to "15", "1h" to "60", "4h" to "240", "1d" to "D", "1w" to "D")[tf] ?: "60"
+    val to = System.currentTimeMillis() / 1000
+    val from = to - (req * (if (tf == "1w") 604_800L else ms / 1000) * 1.3).toLong() - 3600
+    val srcs = listOf("Nobitex" to "https://api.nobitex.ir/market/udf/history?symbol=USDTIRT&resolution=$res&from=$from&to=$to",
+        "Wallex" to "https://api.wallex.ir/v1/udf/history?symbol=USDTTMN&resolution=$res&from=$from&to=$to")
+    val ord = if (S.pref.isNotEmpty()) srcs.sortedBy { if (it.first == S.pref) 0 else 1 } else srcs
+    for ((n, u) in ord) {
+        try {
+            val raw = parseUdf(get(u))
+            if (raw.size > 5) {
+                val d = if (raw.last().c > 1_000_000) 10.0 else 1.0
+                val r = raw.map { Candle(it.o / d, it.h / d, it.l / d, it.c / d, it.v, it.t) }
+                return n to (if (tf == "1w") agg(r, 604_800_000L) else r)
+            }
+        } catch (e: Exception) { }
+    }
+    return null
+}
+private suspend fun fetchMelted(tf: String, req: Int): List<Candle>? {
+    val ms = TFMS[tf] ?: 60_000L
+    val x = fetchCandles("XAUUSD", tf, req + 40) ?: return null
+    val u = fetchUsdt(tf, req + 40) ?: return null
+    val um = u.second.associateBy { it.t / ms }; val k = 4.608 * 0.705 / 31.1035
+    return x.mapNotNull { g -> um[g.t / ms]?.let { t ->
+        val o = g.o * t.o * k; val cl = g.c * t.c * k
+        Candle(o, max(g.h * t.h * k, max(o, cl)), min(g.l * t.l * k, min(o, cl)), cl, 0.0, g.t) } }
+}
 private fun agg(cs: List<Candle>, ms: Long): List<Candle> = cs.groupBy { it.t / ms }.toSortedMap().values.map { g -> Candle(g.first().o, g.maxOf { it.h }, g.minOf { it.l }, g.last().c, g.sumOf { it.v }, g.first().t) }
 
 fun tickFrom(cs: List<Candle>): Tick {
@@ -95,6 +135,8 @@ fun tickFrom(cs: List<Candle>): Tick {
 suspend fun fetchCandles(sym: String, tf: String, limit: Int = 300): List<Candle>? = withContext(Dispatchers.IO) {
     val s = SYMS.firstOrNull { it.key == sym } ?: SYMS[0]
     val req = max(limit, 30); val ms = TFMS[tf] ?: 60_000L
+    if (s.sp == "usdt") { val r = fetchUsdt(tf, req); if (r == null) return@withContext null; S.src = r.first; return@withContext norm(r.second, ms).takeLast(limit) }
+    if (s.sp == "melted") { val r = fetchMelted(tf, req); if (r == null || r.size < 10) return@withContext null; S.src = "تخمینی: اونس×تتر"; return@withContext norm(r, ms).takeLast(limit) }
     val okxBar = mapOf("1m" to "1m", "5m" to "5m", "15m" to "15m", "1h" to "1H", "4h" to "4H", "1d" to "1D", "1w" to "1W")[tf]
     val kcType = mapOf("1m" to "1min", "5m" to "5min", "15m" to "15min", "1h" to "1hour", "4h" to "4hour", "1d" to "1day", "1w" to "1week")[tf]
     val gtI = mapOf("1m" to "1m", "5m" to "5m", "15m" to "15m", "1h" to "1h", "4h" to "4h", "1d" to "1d", "1w" to "7d")[tf]
@@ -114,10 +156,10 @@ suspend fun fetchCandles(sym: String, tf: String, limit: Int = 300): List<Candle
     for ((n, f) in order) {
         val r = f() ?: continue
         if (r.size <= 10) continue
-        if (System.currentTimeMillis() - r.last().t <= maxAge) { S.src = n; return@withContext r.takeLast(limit) }
+        if (System.currentTimeMillis() - r.last().t <= maxAge) { S.src = n; return@withContext norm(r, ms).takeLast(limit) }
         if (fb == null) fb = n to r
     }
-    fb?.let { S.src = it.first; it.second.takeLast(limit) }
+    fb?.let { S.src = it.first; norm(it.second, ms).takeLast(limit) }
 }
 
 suspend fun fetchTick(sym: String): Tick? = withContext(Dispatchers.IO) {
@@ -149,7 +191,7 @@ fun macd(v: List<Double>): Triple<List<Double>, List<Double>, List<Double>> {
 }
 
 fun f2(p: Double, d: Int = 2): String = String.format(Locale.US, "%,.${d}f", p)
-fun fp(p: Double) = if (p >= 100) f2(p) else if (p >= 1) f2(p, 4) else f2(p, 6)
+fun fp(p: Double) = if (p >= 10_000) f2(p, 0) else if (p >= 100) f2(p) else if (p >= 1) f2(p, 4) else f2(p, 6)
 fun fv(v: Double) = if (v >= 1e9) f2(v / 1e9) + "B" else if (v >= 1e6) f2(v / 1e6) + "M" else f2(v, 0)
 fun sg(v: Double) = (if (v >= 0) "+" else "−") + fp(abs(v))
 val AXIS = 64.dp
@@ -199,9 +241,9 @@ fun DrawScope.series(s: List<Double>, a: Int, b: Int, col: Color, x: (Double) ->
 }
 
 @Composable
-fun SubPane(kind: String, cs: List<Candle>, I: Inds, offF: () -> Float, visF: () -> Float, gc: Color, rc: Color) {
+fun SubPane(kind: String, cs: List<Candle>, I: Inds, offF: () -> Float, visF: () -> Float, gc: Color, rc: Color, bg: Color = Color.Black) {
     val paint = remember { android.graphics.Paint().apply { isAntiAlias = true } }
-    Canvas(Modifier.fillMaxWidth().height(72.dp).background(Color.Black)) {
+    Canvas(Modifier.fillMaxWidth().height(72.dp).background(bg)) {
         val off = offF(); val vis = visF()
         val pw = size.width - AXIS.toPx(); val h = size.height; val cw = pw / vis
         val a = max(0, off.toInt()); val b = min(cs.size - 1, (off + vis).toInt() + 1)
@@ -251,7 +293,8 @@ fun Practice() {
     var tf by S::tf
     var cs by S::cs
     var tick by S::tick
-    var status by remember { mutableStateOf("") }
+    var status by S::status
+    var cross by remember { mutableStateOf<Offset?>(null) }
     var mode by remember { mutableIntStateOf(0) }
     val ovs = S.ovs
     val subs = S.subs
@@ -292,19 +335,21 @@ fun Practice() {
     val an = remember(cs) { Analysis(cs) }
     val I = remember(cs) { Inds(cs) }
     val ta = remember(cs, auto) { if (auto) an.auto(I) else null }
+    val dk = isDark(); val bgc = if (dk) Color.Black else Color.White; val fgc = if (dk) Color.White else Color(0xFF131722)
+    val axisCol = if (dk) 0xFFD1D4DC.toInt() else 0xFF434651.toInt()
     val df = remember(tf) { SimpleDateFormat(if (tf.endsWith("d") || tf.endsWith("w")) "yyyy-MM-dd" else "HH:mm", Locale.US) }
     val paint = remember { android.graphics.Paint().apply { isAntiAlias = true } }
     LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); delay(1000) } }
     LaunchedEffect(Unit) { snapshotFlow { "$sym|$tf|$ctype|$grid|${ovs.joinToString(",")}|${subs.joinToString(",")}" }.collect { prefs.edit().putString("cfg", it).apply() } }
     LaunchedEffect(Unit) { snapshotFlow { lines.toList() }.collect { if (S.live && S.key == "$sym|$tf" && cs[0].t > 0) prefs.edit().putString("d_" + S.key, encode(it, cs, TFMS[tf] ?: 60_000L)).apply() } }
-    LaunchedEffect(sym, tf) {
+    LaunchedEffect(sym, tf, S.pref) {
         val key = "$sym|$tf"
         if (S.key != key || !S.live) {
             status = "در حال دریافت داده..."
             val r = fetchCandles(sym, tf)
             val ok = r != null && r.size > 30
             val d = if (ok) r!! else sampleCandles()
-            lines.clear(); sel = -1; pending = null; res = emptyList(); graded = false
+            lines.clear(); sel = -1; pending = null; res = emptyList(); graded = false; S.autoFit = true
             vis = min(80f, d.size.toFloat()); off = d.size - vis + max(8f, vis * 0.15f); vz = 1f; voff = 0.0
             cs = d; S.live = ok; S.key = key
             if (ok) lines.addAll(decode(prefs.getString("d_$key", "") ?: "", d, TFMS[tf] ?: 60_000L))
@@ -324,7 +369,7 @@ fun Practice() {
     }
     val rng by remember { derivedStateOf {
         val a = off.toInt().coerceIn(0, cs.size - 1); val b = min(cs.size, (off + vis).toInt() + 1)
-        val s = cs.subList(a, max(b, a + 1)); val hh = s.maxOf { it.h }; val ll = s.minOf { it.l }
+        val s = cs.subList(a, max(b, a + 1)); val hh = if (S.autoFit) s.maxOf { it.h } else S.fixHH; val ll = if (S.autoFit) s.minOf { it.l } else S.fixLL
         val m = (hh + ll) / 2 + voff; val hf = (hh - ll) / 2 * 1.3 * vz + 1e-9
         (m - hf) to (m + hf)
     } }
@@ -335,13 +380,12 @@ fun Practice() {
     val hc = if (pct >= 0) gc else rc
     val tools = listOf("", "خط افقی", "خط روند", "ناحیه", "فیبوناچی", "خط عمودی")
 
-    Column(Modifier.fillMaxSize().background(Color.Black)) {
+    Column(Modifier.fillMaxSize().background(bgc)) {
         Column(Modifier.padding(horizontal = 12.dp)) {
             if (mode != 0) Text("ابزار «" + tools[mode] + "» فعال است؛ روی چارت لمس کن" + if (mode >= 2 && mode != 5) " (دو نقطه)" else "", fontSize = 11.sp, color = Color(0xFFFFC107))
-            else if (status.isNotEmpty()) Text(status, fontSize = 11.sp, color = Color.Gray)
         }
         Box(Modifier.fillMaxWidth().weight(1f).onSizeChanged { bw = it.width; bh = it.height }) {
-        Canvas(Modifier.fillMaxSize().background(Color.Black)
+        Canvas(Modifier.fillMaxSize().background(bgc)
             .pointerInput(cs) {
                 detectTapGestures { p ->
                     val pw = size.width - AXIS.toPx(); val ph = size.height - 22.dp.toPx()
@@ -351,6 +395,7 @@ fun Practice() {
                     if (mode == 0) {
                         sel = -1
                         for (k in lines.indices.reversed()) { val h = hit(lines[k], p.x, p.y, px, py, pw, 22.dp.toPx()); if (h >= 0) { sel = k; selH = h; break } }
+                        if (sel < 0) { val cr = cross; cross = if (cr != null && (cr - p).getDistance() < 40.dp.toPx()) null else p } else cross = null
                         return@detectTapGestures
                     }
                     val idx = off + p.x / pw * vis - 0.5
@@ -383,6 +428,7 @@ fun Practice() {
                     }
                 }
             }
+            .pointerInput(cs) { detectDragGesturesAfterLongPress(onDragStart = { p -> if (mode == 0) cross = p }, onDrag = { ch, d -> if (mode == 0) { ch.consume(); cross = (cross ?: ch.position) + d } }) }
         ) {
             val axisW = AXIS.toPx(); val pw = size.width - axisW; val ph = size.height - 22.dp.toPx()
             val lo = rng.first; val hi = rng.second; val cw = pw / vis; val tnow = now
@@ -391,8 +437,8 @@ fun Practice() {
             val xs = { i: Double -> x(i) }; val ys = { v: Double -> y(v) }
             val a = max(0, off.toInt()); val b = min(cs.size - 1, (off + vis).toInt() + 1)
             val nc = drawContext.canvas.nativeCanvas
-            val gl = Color(0xFF141414)
-            paint.textSize = 12.sp.toPx(); paint.textAlign = android.graphics.Paint.Align.LEFT; paint.color = 0xFFD1D4DC.toInt()
+            val gl = if (dk) Color(0xFF141414) else Color(0xFFF0F3FA)
+            paint.textSize = 12.sp.toPx(); paint.textAlign = android.graphics.Paint.Align.LEFT; paint.color = axisCol
             for (g in 0..7) {
                 val p = lo + (hi - lo) * g / 7; val yy = y(p)
                 if (grid) drawLine(gl, Offset(0f, yy), Offset(pw, yy), 1f)
@@ -466,13 +512,33 @@ fun Practice() {
                 drawLine(hc, Offset(0f, ly0), Offset(pw, ly0), 1.5f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(3f, 8f)))
             }
             val hiI = (a..b).maxByOrNull { cs[it].h }!!; val loI = (a..b).minByOrNull { cs[it].l }!!
-            paint.color = 0xFFD1D4DC.toInt(); paint.textSize = 10.sp.toPx(); paint.textAlign = android.graphics.Paint.Align.CENTER
+            paint.color = axisCol; paint.textSize = 10.sp.toPx(); paint.textAlign = android.graphics.Paint.Align.CENTER
             nc.drawText(fp(cs[hiI].h), x(hiI.toDouble()).coerceIn(30f, pw - 30f), y(cs[hiI].h) - 4.dp.toPx(), paint)
             nc.drawText(fp(cs[loI].l), x(loI.toDouble()).coerceIn(30f, pw - 30f), y(cs[loI].l) + 12.dp.toPx(), paint)
             val ly = y(cs.last().c).coerceIn(17.dp.toPx(), ph - 17.dp.toPx())
             drawRect(hc, Offset(pw, ly - 17.dp.toPx()), Size(axisW, 34.dp.toPx()))
             paint.color = 0xFFFFFFFF.toInt(); paint.textSize = 12.sp.toPx(); paint.textAlign = android.graphics.Paint.Align.LEFT
             nc.drawText(fp(cs.last().c), pw + 5.dp.toPx(), ly - 1.dp.toPx(), paint)
+            val cr = cross
+            if (cr != null && mode == 0 && cr.x in 0f..pw && cr.y in 0f..ph) {
+                val cc = if (dk) Color(0xFFB2B5BE) else Color(0xFF787B86); val dash2 = PathEffect.dashPathEffect(floatArrayOf(10f, 8f))
+                drawLine(cc, Offset(0f, cr.y), Offset(pw, cr.y), 1.5f, pathEffect = dash2); drawLine(cc, Offset(cr.x, 0f), Offset(cr.x, ph), 1.5f, pathEffect = dash2)
+                val pr = hi - cr.y / ph * (hi - lo); val ci = (off + cr.x / pw * vis - 0.5).roundToInt()
+                val tt2 = if (ci < cs.size) cs[ci.coerceAtLeast(0)].t else cs.last().t + (ci - (cs.size - 1)) * (TFMS[tf] ?: 60_000L)
+                drawRect(Color(0xFF363A45), Offset(pw, cr.y - 9.dp.toPx()), Size(axisW, 18.dp.toPx()))
+                paint.color = 0xFFFFFFFF.toInt(); paint.textSize = 12.sp.toPx(); paint.textAlign = android.graphics.Paint.Align.LEFT
+                nc.drawText(fp(pr), pw + 5.dp.toPx(), cr.y + 4.dp.toPx(), paint)
+                if (tt2 > 0) {
+                    val lb = SimpleDateFormat("MM-dd HH:mm", Locale.US).format(Date(tt2)); val tw = paint.measureText(lb)
+                    val bx = (cr.x - tw / 2 - 6.dp.toPx()).coerceIn(0f, pw - tw - 12.dp.toPx())
+                    drawRect(Color(0xFF363A45), Offset(bx, ph + 2.dp.toPx()), Size(tw + 12.dp.toPx(), 18.dp.toPx()))
+                    nc.drawText(lb, bx + 6.dp.toPx(), ph + 15.dp.toPx(), paint)
+                }
+                if (ci in cs.indices) {
+                    val k = cs[ci]; paint.color = (if (k.c >= k.o) 0xFF089981 else 0xFFF23645).toInt(); paint.textSize = 11.sp.toPx()
+                    nc.drawText("O " + fp(k.o) + "  H " + fp(k.h) + "  L " + fp(k.l) + "  C " + fp(k.c), 6.dp.toPx(), 14.dp.toPx(), paint)
+                }
+            }
             val ms = TFMS[tf] ?: 60_000L
             if (cs.last().t > 0 && tnow > 0) {
                 val left = (ms - (tnow - cs.last().t) % ms) / 1000
@@ -483,21 +549,21 @@ fun Practice() {
         Box(Modifier.align(Alignment.TopCenter).padding(top = 8.dp)
             .offset { IntOffset(S.capX.roundToInt(), S.capY.roundToInt()) }
             .clip(RoundedCornerShape(50))
-            .background(Brush.verticalGradient(listOf(Color(if (lines.isEmpty()) 0x22FFFFFF else 0x55FFFFFF), Color(0x14FFFFFF))))
-            .border(1.dp, Color(0x66FFFFFF), RoundedCornerShape(50))
+            .background(Brush.verticalGradient(if (dk) listOf(Color(if (lines.isEmpty()) 0x22FFFFFF else 0x55FFFFFF), Color(0x14FFFFFF)) else listOf(Color(if (lines.isEmpty()) 0x14000000 else 0x33000000), Color(0x0A000000))))
+            .border(1.dp, Color(if (dk) 0x66FFFFFF else 0x44000000), RoundedCornerShape(50))
             .pointerInput(Unit) { detectTapGestures(onLongPress = {}, onTap = { if (lines.isNotEmpty()) { sel = -1; res = Analysis(cs).grade(lines.toList()); graded = true; dlg = "res" } }) }
             .pointerInput(Unit) { detectDragGesturesAfterLongPress(onDrag = { ch, d -> ch.consume(); S.capX = (S.capX + d.x).coerceIn(-bw / 2f + 60f, bw / 2f - 60f); S.capY = (S.capY + d.y).coerceIn(0f, bh - 140f) }) }) {
-            Text("✓ تصحیح" + if (lines.isEmpty()) "" else " (" + lines.size + ")", Modifier.padding(horizontal = 18.dp, vertical = 8.dp), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            Text("✓ تصحیح" + if (lines.isEmpty()) "" else " (" + lines.size + ")", Modifier.padding(horizontal = 18.dp, vertical = 8.dp), color = fgc, fontSize = 13.sp, fontWeight = FontWeight.Medium)
         }
         }
-        subs.forEach { SubPane(it, cs, I, { off }, { vis }, gc, rc) }
+        subs.forEach { SubPane(it, cs, I, { off }, { vis }, gc, rc, bgc) }
         if (sel in 0 until lines.size) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             Chip("⧉ کپی", false) { lines.add(moveD(lines[sel], 0, 3.0, -(rng.second - rng.first) * 0.03)); sel = lines.lastIndex; selH = 0; graded = false }
             Chip("🗑 حذف", false) { lines.removeAt(sel); sel = -1; graded = false }
             Chip("✓ تمام", false) { sel = -1 }
             Text("برای جابه‌جایی بکش", fontSize = 11.sp, color = Color.Gray)
         }
-        Row(Modifier.fillMaxWidth().background(Color.Black).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().background(bgc).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Box {
                 Text(sym, Modifier.clickable { menu = "sym" }.padding(8.dp), fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 DropdownMenu(menu == "sym", { menu = "" }) { SYMBOLS.forEach { (k, n) -> DropdownMenuItem({ Text(n) }, { sym = k; menu = "" }) } }
@@ -515,7 +581,7 @@ fun Practice() {
                     DropdownMenuItem({ Text("🗑 پاک کردن همه") }, { menu = ""; lines.clear(); res = emptyList(); graded = false })
                 }
             }
-            Text("تحلیل", Modifier.clickable { auto = !auto; if (auto) dlg = "auto" }.padding(10.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold, color = if (auto) Color(0xFF2962FF) else Color.White)
+            Text("تحلیل", Modifier.clickable { auto = !auto; if (auto) dlg = "auto" }.padding(10.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold, color = if (auto) Color(0xFF2962FF) else fgc)
             Text("ƒx", Modifier.clickable { dlg = "ind" }.padding(10.dp), fontSize = 20.sp)
             Text("⋯", Modifier.clickable { hub = true }.padding(10.dp), fontSize = 22.sp)
             Text("↶", Modifier.clickable { if (lines.isNotEmpty()) lines.removeAt(lines.size - 1); graded = false }.padding(10.dp), fontSize = 22.sp)
@@ -573,13 +639,26 @@ fun Practice() {
             Text("بیشترین: " + fp(tick?.hi ?: cs.maxOf { it.h })); Text("کمترین: " + fp(tick?.lo ?: cs.minOf { it.l })); Text("حجم ۲۴ ساعت: " + fv(tick?.vol ?: cs.sumOf { it.v }))
         } })
     if (dlg == "set") AlertDialog(onDismissRequest = ok, confirmButton = { TextButton(ok) { Text("تأیید") } }, title = { Text("تنظیمات چارت") },
-        text = { Column { Row(verticalAlignment = Alignment.CenterVertically) { Text("نمایش شبکه", Modifier.weight(1f)); Switch(grid, { grid = it }) }; TextButton({ vz = 1f; voff = 0.0; dlg = "" }) { Text("بازنشانی مقیاس عمودی") } } })
+        text = { Column(Modifier.verticalScroll(rememberScrollState())) {
+            Row(verticalAlignment = Alignment.CenterVertically) { Text("نمایش شبکه", Modifier.weight(1f)); Switch(grid, { grid = it }) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("تنظیم خودکار مقیاس قیمت هنگام اسکرول", Modifier.weight(1f))
+                Switch(S.autoFit, { on ->
+                    if (!on) { val a0 = off.toInt().coerceIn(0, cs.size - 1); val b0 = min(cs.size, (off + vis).toInt() + 1); val s0 = cs.subList(a0, max(b0, a0 + 1)); S.fixHH = s0.maxOf { it.h }; S.fixLL = s0.minOf { it.l } }
+                    S.autoFit = on })
+            }
+            TextButton({ vz = 1f; voff = 0.0; dlg = "" }) { Text("بازنشانی مقیاس عمودی") }
+            Text("منبع داده", Modifier.padding(top = 8.dp), fontWeight = FontWeight.Bold)
+            listOf("" to "خودکار", "Binance" to "Binance", "OKX" to "OKX", "KuCoin" to "KuCoin", "Gate" to "Gate.io", "Yahoo" to "Yahoo Finance", "Nobitex" to "نوبیتکس (ایران)", "Wallex" to "والکس (ایران)").forEach { (k, n) ->
+                Row(Modifier.fillMaxWidth().clickable { S.pref = k; S.src = ""; S.key = ""; S.live = false; ctx.getSharedPreferences("app", 0).edit().putString("src", k).apply() }, verticalAlignment = Alignment.CenterVertically) { RadioButton(S.pref == k, null); Text("  " + n) }
+            }
+        } })
 }
 
 
 private val S = ChartStore
 object ChartStore {
-    var inited = false; var live = false; var key = ""; var src = ""; var pref by mutableStateOf(""); var auto by mutableStateOf(false); var capX by mutableFloatStateOf(0f); var capY by mutableFloatStateOf(0f)
+    var inited = false; var live = false; var key = ""; var src = ""; var pref by mutableStateOf(""); var auto by mutableStateOf(false); var capX by mutableFloatStateOf(0f); var capY by mutableFloatStateOf(0f); var autoFit by mutableStateOf(true); var fixHH = 0.0; var fixLL = 0.0; var status by mutableStateOf("")
     var sym by mutableStateOf("XAUUSD"); var tf by mutableStateOf("15m")
     var cs by mutableStateOf<List<Candle>>(sampleCandles()); var tick by mutableStateOf<Tick?>(null)
     val ovs = mutableStateListOf<String>(); val subs = mutableStateListOf("VOL")
@@ -653,6 +732,6 @@ fun decode(s: String, cs: List<Candle>, ms: Long): List<Drawn> = s.split(";").fi
 }
 
 fun maxOff(n: Int, vis: Float) = max(0f, n - vis + max(8f, vis * 0.6f))
-fun sgp(v: Double, ref: Double) = (if (v >= 0) "+" else "−") + f2(abs(v), if (ref >= 100) 2 else if (ref >= 1) 4 else 6)
+fun sgp(v: Double, ref: Double) = (if (v >= 0) "+" else "−") + f2(abs(v), if (ref >= 10_000) 0 else if (ref >= 100) 2 else if (ref >= 1) 4 else 6)
 fun sgc(v: Double) = (if (v >= 0) "+" else "−") + f2(abs(v), 2)
 fun hhmm(t: Long): String = SimpleDateFormat("HH:mm", Locale.US).format(Date(t))

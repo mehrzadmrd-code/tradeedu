@@ -26,6 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.foundation.isSystemInDarkTheme
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -83,8 +84,9 @@ fun TvIcon(k: Int, col: Color) {
 fun App() {
     var tab by ThemeStore::tab
     val names = listOf("دوره‌ها", "تمرین چارت", "آمار پیشرفت", "تنظیمات")
-    val bar = if (tab == 1) Color.Black else MaterialTheme.colorScheme.surface
-    val fg = if (tab == 1) Color.White else MaterialTheme.colorScheme.onSurface
+    val dk = isDark(); val chartBg = if (dk) Color.Black else Color.White
+    val bar = if (tab == 1) chartBg else MaterialTheme.colorScheme.surface
+    val fg = if (tab == 1) (if (dk) Color.White else Color(0xFF131722)) else MaterialTheme.colorScheme.onSurface
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().background(bar).heightIn(min = 48.dp).padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             if (tab == 1) {
@@ -97,13 +99,14 @@ fun App() {
                     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                         Text(fp(last) + "  " + sgp(chg, last) + " (" + sgc(pct) + "%)", color = if (pct >= 0) Color(0xFF089981) else Color(0xFFF23645), fontSize = 12.sp, lineHeight = 14.sp)
                     }
+                    if (ChartStore.status.isNotEmpty()) Text(ChartStore.status, fontSize = 10.sp, lineHeight = 12.sp, color = Color.Gray)
                 }
             } else Text(names[tab], color = fg, fontSize = 18.sp, fontWeight = FontWeight.Medium)
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when (tab) {
                 0 -> Courses()
-                1 -> CompositionLocalProvider(LocalContentColor provides Color.White) { Practice() }
+                1 -> CompositionLocalProvider(LocalContentColor provides (if (dk) Color.White else Color(0xFF131722))) { Practice() }
                 2 -> Stats()
                 else -> SettingsScreen()
             }
@@ -130,7 +133,7 @@ fun SettingsScreen() {
         }
         Text("نکته: صفحه‌ی چارت همیشه تیره نمایش داده می‌شود.", fontSize = 12.sp, color = Color.Gray)
         Text("منبع داده‌ی چارت", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
-        listOf("" to "خودکار (پیشنهادی)", "Binance" to "Binance", "OKX" to "OKX", "KuCoin" to "KuCoin", "Gate" to "Gate.io", "Yahoo" to "Yahoo Finance").forEach { (k, n) ->
+        listOf("" to "خودکار (پیشنهادی)", "Binance" to "Binance", "OKX" to "OKX", "KuCoin" to "KuCoin", "Gate" to "Gate.io", "Yahoo" to "Yahoo Finance", "Nobitex" to "نوبیتکس (ایران)", "Wallex" to "والکس (ایران)").forEach { (k, n) ->
             Row(Modifier.fillMaxWidth().clickable { ChartStore.pref = k; ChartStore.src = ""; ChartStore.key = ""; ChartStore.live = false; ctx.getSharedPreferences("app", 0).edit().putString("src", k).apply() }, verticalAlignment = Alignment.CenterVertically) {
                 RadioButton(ChartStore.pref == k, null); Text("  " + n)
             }
@@ -207,3 +210,6 @@ fun Stats() {
         COURSES.forEachIndexed { ci, c -> Text("${c.name}: ${c.lessons.indices.count { "$ci-$it" in Progress.done }} از ${c.lessons.size}") }
     }
 }
+
+@Composable
+fun isDark(): Boolean = when (ThemeStore.mode) { 0 -> false; 1 -> true; else -> isSystemInDarkTheme() }

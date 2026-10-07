@@ -26,8 +26,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             val dark = when (ThemeStore.mode) { 0 -> false; 1 -> true; else -> isSystemInDarkTheme() }
             MaterialTheme(colorScheme = if (dark) TgScheme else TgLight) {
-                val bar = if (ThemeStore.tab == 1) Color.Black else MaterialTheme.colorScheme.surface
-                val lightBars = !dark && ThemeStore.tab != 1
+                val bar = if (ThemeStore.tab == 1) (if (dark) Color.Black else Color.White) else MaterialTheme.colorScheme.surface
+                val lightBars = !dark
                 val view = LocalView.current
                 SideEffect {
                     val w = (view.context as Activity).window
