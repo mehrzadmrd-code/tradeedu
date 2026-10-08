@@ -102,7 +102,7 @@ private fun fetchUsdt(tf: String, req: Int): Pair<String, List<Candle>>? {
     val from = to - (req * (if (tf == "1w") 604_800L else ms / 1000) * 1.3).toLong() - 3600
     val srcs = listOf("Nobitex" to "https://api.nobitex.ir/market/udf/history?symbol=USDTIRT&resolution=$res&from=$from&to=$to",
         "Wallex" to "https://api.wallex.ir/v1/udf/history?symbol=USDTTMN&resolution=$res&from=$from&to=$to")
-    val ord = if (S.pref.isNotEmpty()) srcs.sortedBy { if (it.first == S.pref) 0 else 1 } else srcs
+    val ord = if (S.pref == "Nobitex" || S.pref == "Wallex") srcs.filter { it.first == S.pref } else srcs
     for ((n, u) in ord) {
         try {
             val raw = parseUdf(get(u))
@@ -148,8 +148,10 @@ suspend fun fetchCandles(sym: String, tf: String, limit: Int = 300): List<Candle
         "KuCoin" to { s.kc?.let { id -> tr { parseKc(get("https://api.kucoin.com/api/v1/market/candles?type=$kcType&symbol=$id")) } } },
         "Gate" to { s.gt?.let { id -> tr { parseGt(get("https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair=$id&interval=$gtI&limit=$req")) } } },
         "Yahoo" to { s.yh?.let { id -> tr { parseYh(get("https://query1.finance.yahoo.com/v8/finance/chart/" + java.net.URLEncoder.encode(id, "UTF-8") + "?interval=${yp.first}&range=${yp.second}")).let { if (tf == "4h") agg(it, 14_400_000L) else it } } } })
-    val first = if (S.pref.isNotEmpty()) S.pref else S.src
-    val order = if (first.isNotEmpty()) all.sortedBy { if (it.first == first) 0 else 1 }
+    val pf = if (S.pref == "Nobitex" || S.pref == "Wallex") "" else S.pref
+    val first = if (pf.isNotEmpty()) pf else S.src
+    val order = if (pf.isNotEmpty()) all.filter { it.first == pf }
+        else if (first.isNotEmpty()) all.sortedBy { if (it.first == first) 0 else 1 }
         else if (s.bin == null) all.sortedBy { if (it.first == "Yahoo") 0 else 1 } else all
     var fb: Pair<String, List<Candle>>? = null
     val maxAge = max(3 * ms, 900_000L)
@@ -320,10 +322,11 @@ fun Practice() {
         if (!S.inited) {
             S.inited = true
             prefs.getString("cfg", null)?.split("|")?.let { p ->
-                if (p.size == 6) {
+                if (p.size >= 6) {
                     S.sym = if (SYMS.any { it.key == p[0] }) p[0] else "XAUUSD"; S.tf = p[1]; S.ctype = p[2].toIntOrNull() ?: 0; S.grid = p[3] == "true"
                     S.ovs.clear(); S.ovs.addAll(p[4].split(",").filter { it.isNotEmpty() })
                     S.subs.clear(); S.subs.addAll(p[5].split(",").filter { it.isNotEmpty() })
+                    if (p.size >= 10) { S.autoFit = p[6] == "true"; S.auto = p[7] == "true"; S.capX = p[8].toFloatOrNull() ?: 0f; S.capY = p[9].toFloatOrNull() ?: 0f }
                 }
             }
         }
@@ -340,7 +343,7 @@ fun Practice() {
     val df = remember(tf) { SimpleDateFormat(if (tf.endsWith("d") || tf.endsWith("w")) "yyyy-MM-dd" else "HH:mm", Locale.US) }
     val paint = remember { android.graphics.Paint().apply { isAntiAlias = true } }
     LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); delay(1000) } }
-    LaunchedEffect(Unit) { snapshotFlow { "$sym|$tf|$ctype|$grid|${ovs.joinToString(",")}|${subs.joinToString(",")}" }.collect { prefs.edit().putString("cfg", it).apply() } }
+    LaunchedEffect(Unit) { snapshotFlow { "$sym|$tf|$ctype|$grid|${ovs.joinToString(",")}|${subs.joinToString(",")}|${S.autoFit}|${S.auto}|${S.capX}|${S.capY}" }.collect { prefs.edit().putString("cfg", it).apply() } }
     LaunchedEffect(Unit) { snapshotFlow { lines.toList() }.collect { if (S.live && S.key == "$sym|$tf" && cs[0].t > 0) prefs.edit().putString("d_" + S.key, encode(it, cs, TFMS[tf] ?: 60_000L)).apply() } }
     LaunchedEffect(sym, tf, S.pref) {
         val key = "$sym|$tf"
@@ -349,11 +352,12 @@ fun Practice() {
             val r = fetchCandles(sym, tf)
             val ok = r != null && r.size > 30
             val d = if (ok) r!! else sampleCandles()
-            lines.clear(); sel = -1; pending = null; res = emptyList(); graded = false; S.autoFit = true
+            lines.clear(); sel = -1; pending = null; res = emptyList(); graded = false
             vis = min(80f, d.size.toFloat()); off = d.size - vis + max(8f, vis * 0.15f); vz = 1f; voff = 0.0
             cs = d; S.live = ok; S.key = key
+            if (!S.autoFit) { val a0 = off.toInt().coerceIn(0, d.size - 1); val b0 = min(d.size, (off + vis).toInt() + 1); val s0 = d.subList(a0, max(b0, a0 + 1)); S.fixHH = s0.maxOf { it.h }; S.fixLL = s0.minOf { it.l } }
             if (ok) lines.addAll(decode(prefs.getString("d_$key", "") ?: "", d, TFMS[tf] ?: 60_000L))
-            status = if (ok) "منبع: " + S.src + " • آخرین کندل " + hhmm(d.last().t) else "هیچ منبع داده‌ای در دسترس نبود؛ داده‌ی نمونه نمایش داده می‌شود"
+            status = if (ok) "منبع: " + S.src + " • آخرین کندل " + hhmm(d.last().t) else (if (S.pref.isNotEmpty()) "منبع انتخابی (" + S.pref + ") پاسخ نداد یا این نماد را ندارد؛ داده‌ی نمونه" else "هیچ منبع داده‌ای در دسترس نبود؛ داده‌ی نمونه نمایش داده می‌شود")
             tick = if (ok) tickFrom(d) else null
         }
         while (S.live) {
@@ -477,7 +481,7 @@ fun Practice() {
                         drawLine(col, Offset(0f, y(lv.price)), Offset(pw, y(lv.price)), 1.5f, pathEffect = dash)
                         paint.color = col.toArgb(); nc.drawText((if (sup) "S " else "R ") + fp(lv.price) + " ×" + lv.touches, 6.dp.toPx(), y(lv.price) - 3.dp.toPx(), paint)
                     }
-                    t.line?.let { drawLine(Color(0xFFFFA726), Offset(x(it.i1), y(it.p1)), Offset(x(it.i2), y(it.p2)), 3f) }
+                    t.lines.forEach { drawLine(Color(0xFFFFA726), Offset(x(it.i1), y(it.p1)), Offset(x(it.i2), y(it.p2)), 3f) }
                 }
                 lines.forEachIndexed { k, d ->
                     val g = res.getOrNull(k)
@@ -563,28 +567,28 @@ fun Practice() {
             Chip("✓ تمام", false) { sel = -1 }
             Text("برای جابه‌جایی بکش", fontSize = 11.sp, color = Color.Gray)
         }
-        Row(Modifier.fillMaxWidth().background(bgc).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp).clip(RoundedCornerShape(50)).background(Brush.verticalGradient(if (dk) listOf(Color(0x33FFFFFF), Color(0x14FFFFFF)) else listOf(Color(0x1F000000), Color(0x0A000000)))).border(1.dp, Color(if (dk) 0x55FFFFFF else 0x33000000), RoundedCornerShape(50)).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Box {
-                Text(sym, Modifier.clickable { menu = "sym" }.padding(8.dp), fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text(sym, Modifier.clickable { menu = "sym" }.padding(6.dp), fontSize = 15.sp, fontWeight = FontWeight.Bold)
                 DropdownMenu(menu == "sym", { menu = "" }) { SYMBOLS.forEach { (k, n) -> DropdownMenuItem({ Text(n) }, { sym = k; menu = "" }) } }
             }
             Box {
-                Text(tf, Modifier.clickable { menu = "tf" }.padding(8.dp), fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text(tf, Modifier.clickable { menu = "tf" }.padding(6.dp), fontSize = 15.sp, fontWeight = FontWeight.Bold)
                 DropdownMenu(menu == "tf", { menu = "" }) { TFS.forEach { t -> DropdownMenuItem({ Text(t) }, { tf = t; menu = "" }) } }
             }
             Spacer(Modifier.weight(1f))
             Box {
-                Text("✏️", Modifier.clickable { menu = "draw" }.padding(10.dp), fontSize = 20.sp)
+                Text("✏️", Modifier.clickable { menu = "draw" }.padding(8.dp), fontSize = 20.sp)
                 DropdownMenu(menu == "draw", { menu = "" }) {
                     listOf(1, 5, 2, 3, 4).forEach { m -> DropdownMenuItem({ Text(tools[m]) }, { mode = m; pending = null; menu = "" }) }
                     DropdownMenuItem({ Text("✅ تصحیح خودکار") }, { menu = ""; if (lines.isNotEmpty()) { res = an.grade(lines.toList()); graded = true; dlg = "res" } })
                     DropdownMenuItem({ Text("🗑 پاک کردن همه") }, { menu = ""; lines.clear(); res = emptyList(); graded = false })
                 }
             }
-            Text("تحلیل", Modifier.clickable { auto = !auto; if (auto) dlg = "auto" }.padding(10.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold, color = if (auto) Color(0xFF2962FF) else fgc)
-            Text("ƒx", Modifier.clickable { dlg = "ind" }.padding(10.dp), fontSize = 20.sp)
-            Text("⋯", Modifier.clickable { hub = true }.padding(10.dp), fontSize = 22.sp)
-            Text("↶", Modifier.clickable { if (lines.isNotEmpty()) lines.removeAt(lines.size - 1); graded = false }.padding(10.dp), fontSize = 22.sp)
+            Text("تحلیل", Modifier.clickable { auto = !auto; if (auto) dlg = "auto" }.padding(8.dp), fontSize = 14.sp, fontWeight = FontWeight.Bold, color = if (auto) Color(0xFF2962FF) else fgc)
+            Text("ƒx", Modifier.clickable { dlg = "ind" }.padding(8.dp), fontSize = 20.sp)
+            Text("⋯", Modifier.clickable { hub = true }.padding(8.dp), fontSize = 22.sp)
+            Text("↶", Modifier.clickable { if (lines.isNotEmpty()) lines.removeAt(lines.size - 1); graded = false }.padding(8.dp), fontSize = 22.sp)
         }
     }
     if (hub) ModalBottomSheet(onDismissRequest = { hub = false }) {
@@ -610,7 +614,7 @@ fun Practice() {
             Text("روند: " + t.trend); Text("تمایل کلی: " + t.bias, fontWeight = FontWeight.Bold)
             t.resists.reversed().forEach { Text("🔴 مقاومت " + fp(it.price) + " (" + it.touches + " برخورد)") }
             t.supports.forEach { Text("🟢 حمایت " + fp(it.price) + " (" + it.touches + " برخورد)") }
-            if (t.line != null) Text("🟠 خط روند معتبر روی چارت رسم شد")
+            if (t.lines.isNotEmpty()) Text("🟠 " + t.lines.size + " خط روند معتبر روی چارت رسم شد") else Text("خط روند معتبری پیدا نشد (حداقل ۲ برخورد بدون شکست)")
             t.notes.forEach { Text("• " + it) }
             Text("چک‌لیست اصولی", Modifier.padding(top = 6.dp), fontWeight = FontWeight.Bold)
             t.checks.forEach { Text((if (it.first) "✅ " else "❌ ") + it.second) }

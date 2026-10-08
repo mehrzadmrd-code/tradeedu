@@ -72,6 +72,23 @@ class Analysis(val cs: List<Candle>) {
         return r
     }
 
+    private fun bestLine(high: Boolean): Drawn.TLine? {
+        val ps = pivots.filter { it.high == high }.takeLast(6); val a = cs.size - 1
+        var best: Drawn.TLine? = null; var bs = Int.MIN_VALUE
+        for (i in ps.indices) for (j in i + 1 until ps.size) {
+            val p = ps[i]; val q = ps[j]
+            if (q.i - p.i < 3) continue
+            val d = Drawn.TLine(p.i.toDouble(), p.price, q.i.toDouble(), q.price)
+            val s = (d.p2 - d.p1) / (d.i2 - d.i1)
+            var touches = 0; var br = 0
+            for (k in ps) if (abs(d.p1 + s * (k.i - d.i1) - k.price) <= tol) touches++
+            for (m in p.i..q.i) { val v = d.p1 + s * (m - d.i1); if (if (high) cs[m].c > v + tol * 0.3 else cs[m].c < v - tol * 0.3) br++ }
+            val score = touches * 10 - br * 6 + j
+            if (br <= 1 && touches >= 2 && score > bs) { bs = score; best = Drawn.TLine(d.i1, d.p1, a.toDouble(), d.p2 + s * (a - d.i2)) }
+        }
+        return best
+    }
+
     fun auto(I: Inds): TA {
         val a = cs.size - 1; val last = cs[a].c
         val hs = pivots.filter { it.high }.takeLast(2); val ls = pivots.filter { !it.high }.takeLast(2)
@@ -81,12 +98,9 @@ class Analysis(val cs: List<Candle>) {
         val trend = if (up) "صعودی (سقف و کف بالاتر)" else if (down) "نزولی (سقف و کف پایین‌تر)" else "خنثی / رنج"
         val sup = levels.filter { it.price < last }.sortedByDescending { it.price }.take(2)
         val rs = levels.filter { it.price > last }.sortedBy { it.price }.take(2)
-        val pts = if (up) ls else if (down) hs else emptyList()
-        var line: Drawn.TLine? = null
-        if (pts.size == 2 && pts[1].i > pts[0].i) {
-            val d = Drawn.TLine(pts[0].i.toDouble(), pts[0].price, pts[1].i.toDouble(), pts[1].price)
-            if (gradeTrend(d).ok) { val s = (d.p2 - d.p1) / (d.i2 - d.i1); line = Drawn.TLine(d.i1, d.p1, a.toDouble(), d.p2 + s * (a - d.i2)) }
-        }
+        val tl = mutableListOf<Drawn.TLine>()
+        if (up) bestLine(false)?.let { tl += it } else if (down) bestLine(true)?.let { tl += it }
+        else { bestLine(false)?.let { tl += it }; bestLine(true)?.let { tl += it } }
         val c = cs[a]; val p = cs[a - 1]; val body = abs(c.c - c.o); val rg = (c.h - c.l).coerceAtLeast(1e-9)
         val uw = c.h - max(c.o, c.c); val lw = min(c.o, c.c) - c.l
         val notes = mutableListOf<String>(); var score = 0
@@ -123,7 +137,7 @@ class Analysis(val cs: List<Candle>) {
             (near != null && near <= atr * 2) to "قیمت نزدیک یک سطح معتبر است (ورود دور از سطح ریسک بالایی دارد)",
             (dir != 0 && (dir > 0) == (last > e) && (dir > 0) == (hist[a] > 0)) to "EMA50 و MACD با جهت تحلیل هم‌سو هستند",
             rrOk to "نسبت ریسک به ریوارد حداقل ۱.۵ است")
-        return TA(trend, bias, sup, rs, line, notes, checks, plan)
+        return TA(trend, bias, sup, rs, tl, notes, checks, plan)
     }
 
     private fun gradeH(d: Drawn.HLine): Feedback {
@@ -179,4 +193,4 @@ class Analysis(val cs: List<Candle>) {
     }
 }
 
-data class TA(val trend: String, val bias: String, val supports: List<Level>, val resists: List<Level>, val line: Drawn.TLine?, val notes: List<String>, val checks: List<Pair<Boolean, String>>, val plan: String)
+data class TA(val trend: String, val bias: String, val supports: List<Level>, val resists: List<Level>, val lines: List<Drawn.TLine>, val notes: List<String>, val checks: List<Pair<Boolean, String>>, val plan: String)
